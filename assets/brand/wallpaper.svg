@@ -1,0 +1,29 @@
+<svg width="2880" height="1864" viewBox="0 0 2880 1864" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#120F0A"/>
+      <stop offset="0.6" stop-color="#181410"/>
+      <stop offset="1" stop-color="#1C1812"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.72" cy="0.12" r="0.5">
+      <stop offset="0" stop-color="#1B3735"/>
+      <stop offset="0.5" stop-color="#152D2D" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#152D2D" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="vignette" cx="0.5" cy="0.5" r="0.75">
+      <stop offset="0.6" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.35"/>
+    </radialGradient>
+    <pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse">
+      <circle cx="1.4" cy="1.4" r="1.4" fill="#2A241C"/>
+    </pattern>
+  </defs>
+  <rect width="2880" height="1864" fill="url(#bg)"/>
+  <rect width="2880" height="1864" fill="url(#grid)" opacity="0.45"/>
+  <rect width="2880" height="1864" fill="url(#glow)"/>
+  <rect width="2880" height="1864" fill="url(#vignette)"/>
+  <g transform="translate(1440 932) scale(1.45) translate(-521.5 -482.5)">
+    <rect x="443" y="399" width="57" height="215" rx="28.5" fill="#F6F1E9"/>
+    <circle cx="560" cy="392" r="41" fill="#F6F1E9"/>
+  </g>
+</svg>

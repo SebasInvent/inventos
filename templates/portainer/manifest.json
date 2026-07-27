@@ -1,0 +1,37 @@
+{
+  "id": "portainer",
+  "name": "Portainer CE",
+  "role": "Panel de gestión de contenedores y Swarm",
+  "category": "ops",
+  "image": "portainer/portainer-ce:2.21.4",
+  "requires": ["traefik"],
+  "params": [
+    { "key": "PORTAINER_SUBDOMAIN", "prompt": "Subdominio del panel de Portainer", "default": "panel" }
+  ],
+  "secrets": [],
+  "consumes": [
+    { "key": "DOMAIN", "from": "global", "note": "Dominio base para el router de Traefik" },
+    { "key": "NETWORK", "from": "global", "note": "Red overlay externa compartida (default inventnet)" }
+  ],
+  "adminAuth": [],
+  "exposes": [
+    { "name": "panel", "subdomainParam": "PORTAINER_SUBDOMAIN", "servicePort": 9000 }
+  ],
+  "internalOnly": [],
+  "volumes": ["portainer_data"],
+  "mountsDockerSocket": { "path": "/var/run/docker.sock", "mode": "rw", "reason": "Gestionar contenedores/stacks es la función de Portainer; se mitiga con login propio + TLS + sin puertos al host + placement solo en manager + 2FA recomendado." },
+  "healthcheck": null,
+  "credentialsOut": [],
+  "adminNote": "El panel exige el login propio y obligatorio de Portainer: el usuario admin se crea en el primer arranque desde la UI. Por eso NO se añade basicauth de Traefik (a diferencia de Supabase Studio, que no trae login). No hay secretos que el motor genere: la contraseña admin la fija el operador en el primer acceso. RECOMENDACION: completar el setup del admin inmediatamente tras el deploy (hay una ventana breve en la que el primer visitante crea el admin; Portainer deshabilita esa pantalla a los pocos minutos si no se crea) y activar 2FA.",
+  "healthcheckNote": "La imagen de Portainer es minimalista (sin shell/curl/wget), por eso no se declara healthcheck ejecutable dentro del contenedor. Traefik responde 502 si el panel está caído; el estado se puede vigilar apuntando a GET /api/system/status en el puerto 9000.",
+  "hardening": [
+    "Panel admin tras auth: login propio y obligatorio de Portainer (admin creado en el primer arranque). Regla 2 satisfecha sin basicauth de Traefik.",
+    "No publica puertos al host (sin `ports:`): al panel solo se llega por Traefik (TLS) por la red overlay; se elimina el 9443/8000 al host del compose upstream.",
+    "Cero secretos en la plantilla: Portainer no trae contraseña por defecto, así que no hay ningún token de credencial que neutralizar ni que el motor deba generar.",
+    "TLS en todo: router en `websecure`, `tls=true`, `certresolver=letsencryptresolver`; redirect HTTP->HTTPS global lo fuerza Traefik.",
+    "Tag de imagen fijo (portainer/portainer-ce:2.21.4, LTS 2.21), nunca :latest.",
+    "replicas: 1, placement node.role == manager (requerido para acceder a la API de Swarm por el socket del manager).",
+    "Socket de Docker montado RW solo porque es inherente al panel; mitigado con login propio + TLS + sin puertos al host + manager-only. Se recomienda 2FA y RBAC en el README.",
+    "Rollback automático en fallo de update (update_config.failure_action: rollback)."
+  ]
+}

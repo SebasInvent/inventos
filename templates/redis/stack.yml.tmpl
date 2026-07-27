@@ -1,0 +1,55 @@
+version: "3.8"
+
+# ==============================================================================
+# InventOS · Plantilla endurecida: Redis 7
+# ------------------------------------------------------------------------------
+# Cache / almacen en memoria (key-value). Servicio SOLO interno: NO publica
+# puertos al host; solo es alcanzable por otras apps a traves de la red overlay
+# ${NETWORK}. Autenticacion obligatoria via requirepass con ${REDIS_PASSWORD}
+# (secreto generado e interpolado por el motor en el momento del deploy).
+# Persistencia AOF sobre volumen nombrado.
+# ==============================================================================
+
+services:
+  redis:
+    image: redis:7.4.1-alpine        # tag FIJO (nunca :latest) — reproducibilidad + supply-chain (regla #6)
+    # requirepass: autenticacion obligatoria. El token lo genera e interpola el motor (regla #1/#4).
+    # appendonly yes: persistencia AOF en el volumen montado en /data.
+    command:
+      - redis-server
+      - --requirepass
+      - "${REDIS_PASSWORD}"
+      - --appendonly
+      - "yes"
+    environment:
+      # redis-cli lee REDISCLI_AUTH para autenticar el healthcheck sin exponer la
+      # clave en los argumentos del proceso (mas dificil de leer via 'ps'/inspect).
+      REDISCLI_AUTH: "${REDIS_PASSWORD}"
+    volumes:
+      - redis_data:/data
+    networks:
+      - inventnet
+    # NOTA: sin seccion 'ports:' — regla de endurecimiento #3 (DB/cache nunca publican al host).
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      mode: replicated
+      replicas: 1                     # regla #7
+      placement:
+        constraints:
+          - node.role == manager     # regla #7
+      restart_policy:
+        condition: on-failure
+      # Sin labels de Traefik: Redis no expone router publico (servicio interno).
+
+networks:
+  inventnet:
+    external: true                   # la crea el preflight del motor; compartida por todos los stacks
+    name: ${NETWORK}
+
+volumes:
+  redis_data:

@@ -1,0 +1,141 @@
+# =============================================================================
+# InventOS · Plantilla endurecida · n8n (editor + webhook + worker, modo cola)
+# -----------------------------------------------------------------------------
+# Docker Swarm stack (compose 3.8). Cada token estilo dollar-brace lo rellena el
+# motor de deploy por env-interpolation al renderizar. NINGUN secreto vive aqui:
+# solo tokens que el motor genera (ver manifest.json -> secrets).
+#
+# Requiere (deps): traefik (proxy + TLS), postgres (persistencia), redis (cola).
+# Login: n8n gestiona su propio login obligatorio (User Management / cuenta owner
+#        creada en el primer arranque). No se expone panel admin sin auth.
+# =============================================================================
+version: "3.8"
+
+# --- Env compartido por el editor (main) y el worker --------------------------
+# Ambos procesos DEBEN compartir N8N_ENCRYPTION_KEY y la misma cola Redis / DB,
+# de lo contrario el worker no puede desencriptar credenciales ni tomar jobs.
+x-n8n-env: &n8n-env
+  # -- Base de datos (Postgres, nunca publica puerto al host) --
+  DB_TYPE: postgresdb
+  DB_POSTGRESDB_HOST: ${DB_POSTGRESDB_HOST}
+  DB_POSTGRESDB_PORT: ${DB_POSTGRESDB_PORT}
+  DB_POSTGRESDB_DATABASE: ${DB_POSTGRESDB_DATABASE}
+  DB_POSTGRESDB_USER: ${DB_POSTGRESDB_USER}
+  DB_POSTGRESDB_PASSWORD: ${DB_POSTGRESDB_PASSWORD}
+  # -- Modo cola (Bull sobre Redis, nunca publica puerto al host) --
+  EXECUTIONS_MODE: queue
+  QUEUE_BULL_REDIS_HOST: ${QUEUE_BULL_REDIS_HOST}
+  QUEUE_BULL_REDIS_PORT: ${QUEUE_BULL_REDIS_PORT}
+  QUEUE_BULL_REDIS_PASSWORD: ${QUEUE_BULL_REDIS_PASSWORD}
+  QUEUE_HEALTH_CHECK_ACTIVE: "true"
+  # -- Cifrado de credenciales (256-bit, generado por el motor) --
+  N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+  # -- URL publica / proxy inverso Traefik (TLS lo termina Traefik) --
+  N8N_HOST: ${N8N_SUBDOMAIN}.${DOMAIN}
+  N8N_PORT: "5678"
+  N8N_PROTOCOL: https
+  N8N_EDITOR_BASE_URL: https://${N8N_SUBDOMAIN}.${DOMAIN}/
+  WEBHOOK_URL: https://${N8N_SUBDOMAIN}.${DOMAIN}/
+  N8N_PROXY_HOPS: "1"
+  N8N_SECURE_COOKIE: "true"
+  # -- Zona horaria --
+  GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+  TZ: ${GENERIC_TIMEZONE}
+  # -- Endurecimiento / higiene --
+  NODE_ENV: production
+  N8N_DIAGNOSTICS_ENABLED: "false"
+  N8N_HIRING_BANNER_ENABLED: "false"
+  N8N_PERSONALIZATION_ENABLED: "false"
+  N8N_RUNNERS_ENABLED: "true"
+  N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+  EXECUTIONS_DATA_PRUNE: "true"
+  EXECUTIONS_DATA_MAX_AGE: "336"
+
+services:
+  # ---------------------------------------------------------------------------
+  # main: editor (UI) + API REST + receptor de webhooks. Unico servicio con
+  # ruta publica (via Traefik). Persiste su config/llave en volumen dedicado.
+  # ---------------------------------------------------------------------------
+  main:
+    image: n8nio/n8n:1.72.1
+    command: start
+    environment:
+      <<: *n8n-env
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits:
+          memory: 1024M
+        reservations:
+          memory: 256M
+      labels:
+        - "traefik.enable=true"
+        - "traefik.swarm.network=${NETWORK}"
+        - "traefik.http.routers.n8n.rule=Host(`${N8N_SUBDOMAIN}.${DOMAIN}`)"
+        - "traefik.http.routers.n8n.entrypoints=websecure"
+        - "traefik.http.routers.n8n.tls=true"
+        - "traefik.http.routers.n8n.tls.certresolver=letsencryptresolver"
+        - "traefik.http.routers.n8n.service=n8n"
+        - "traefik.http.routers.n8n.middlewares=n8n-headers@swarm"
+        - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+        # Cabeceras de seguridad (HSTS + anti-sniff + anti-clickjacking)
+        - "traefik.http.middlewares.n8n-headers.headers.stsSeconds=31536000"
+        - "traefik.http.middlewares.n8n-headers.headers.stsIncludeSubdomains=true"
+        - "traefik.http.middlewares.n8n-headers.headers.stsPreload=true"
+        - "traefik.http.middlewares.n8n-headers.headers.contentTypeNosniff=true"
+        - "traefik.http.middlewares.n8n-headers.headers.browserXssFilter=true"
+        - "traefik.http.middlewares.n8n-headers.headers.frameDeny=true"
+
+  # ---------------------------------------------------------------------------
+  # worker: ejecuta los workflows tomados de la cola. Sin ruta publica, sin
+  # labels de Traefik (traefik.enable=false). Stateless (todo en DB/Redis).
+  # ---------------------------------------------------------------------------
+  worker:
+    image: n8nio/n8n:1.72.1
+    command: worker
+    environment:
+      <<: *n8n-env
+    networks:
+      - net
+    stop_grace_period: 30s
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits:
+          memory: 1024M
+        reservations:
+          memory: 256M
+      labels:
+        - "traefik.enable=false"
+
+volumes:
+  n8n_data:
+
+networks:
+  net:
+    external: true
+    name: ${NETWORK}

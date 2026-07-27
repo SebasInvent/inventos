@@ -1,0 +1,429 @@
+# =====================================================================
+# InventOS · Plantilla endurecida · Supabase (self-hosted)
+# ---------------------------------------------------------------------
+# Stack multi-servicio para Docker Swarm (1 nodo) + Traefik v3.
+# TODOS los secretos son tokens ${VAR} que el motor de InventOS genera
+# en el momento del deploy. NINGUN valor sensible vive en este archivo.
+#
+# Superficie publica (Traefik + TLS letsencryptresolver):
+#   - kong   (API gateway)  -> router supabase_api    (protegido por JWT anon/service)
+#   - studio (dashboard)    -> router supabase_studio (protegido por basicauth de Traefik)
+#
+# Interno-only (sin puerto al host, sin router): db, analytics, vector,
+#   auth, rest, realtime, storage, imgproxy, meta, functions, supavisor.
+#   La base de datos NUNCA publica puerto (regla de endurecimiento #3).
+#
+# Orden de arranque: NO se usa 'depends_on' a proposito. En Docker Swarm
+#   'depends_on' se ignora; la convergencia se resuelve por 'healthcheck'
+#   (cada servicio expone el suyo) + 'restart_policy: condition: any', que
+#   reintenta hasta que las dependencias (db, kong) esten sanas. Esto es lo
+#   correcto para Swarm, no una omision.
+# =====================================================================
+version: "3.8"
+
+x-deploy-defaults: &deploy-defaults
+  mode: replicated
+  replicas: 1
+  placement:
+    constraints:
+      - node.role == manager
+  restart_policy:
+    condition: any
+    delay: 5s
+
+services:
+
+  # -------------------------------------------------------------------
+  # Postgres — base de datos. INTERNO. Sin 'ports:' (regla #3).
+  # -------------------------------------------------------------------
+  db:
+    image: supabase/postgres:15.8.1.020
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=10
+      - -c
+      - max_wal_senders=10
+    environment:
+      POSTGRES_HOST: /var/run/postgresql
+      PGPORT: 5432
+      POSTGRES_PORT: 5432
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      POSTGRES_DB: ${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXP: ${JWT_EXPIRY}
+    volumes:
+      - ${SUPABASE_ASSETS_DIR}/db/realtime.sql:/docker-entrypoint-initdb.d/migrations/99-realtime.sql:Z
+      - ${SUPABASE_ASSETS_DIR}/db/webhooks.sql:/docker-entrypoint-initdb.d/init-scripts/98-webhooks.sql:Z
+      - ${SUPABASE_ASSETS_DIR}/db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:Z
+      - ${SUPABASE_ASSETS_DIR}/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:Z
+      - ${SUPABASE_ASSETS_DIR}/db/_supabase.sql:/docker-entrypoint-initdb.d/migrations/97-_supabase.sql:Z
+      - ${SUPABASE_ASSETS_DIR}/db/logs.sql:/docker-entrypoint-initdb.d/migrations/99-logs.sql:Z
+      - ${SUPABASE_ASSETS_DIR}/db/pooler.sql:/docker-entrypoint-initdb.d/migrations/99-pooler.sql:Z
+      - db-config:/etc/postgresql-custom
+      - db-data:/var/lib/postgresql/data:Z
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    deploy:
+      <<: *deploy-defaults
+
+  # -------------------------------------------------------------------
+  # Analytics (Logflare) — sink de logs. INTERNO. Sin puerto al host.
+  # -------------------------------------------------------------------
+  analytics:
+    image: supabase/logflare:1.4.0
+    environment:
+      LOGFLARE_NODE_HOST: 127.0.0.1
+      DB_USERNAME: supabase_admin
+      DB_DATABASE: _supabase
+      DB_HOSTNAME: db
+      DB_PORT: 5432
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_SCHEMA: _analytics
+      LOGFLARE_PUBLIC_ACCESS_TOKEN: ${LOGFLARE_PUBLIC_ACCESS_TOKEN}
+      LOGFLARE_PRIVATE_ACCESS_TOKEN: ${LOGFLARE_PRIVATE_ACCESS_TOKEN}
+      LOGFLARE_SINGLE_TENANT: "true"
+      LOGFLARE_SUPABASE_MODE: "true"
+      LOGFLARE_MIN_CLUSTER_SIZE: 1
+      POSTGRES_BACKEND_URL: postgresql://supabase_admin:${POSTGRES_PASSWORD}@db:5432/_supabase
+      POSTGRES_BACKEND_SCHEMA: _analytics
+      LOGFLARE_FEATURE_FLAG_OVERRIDE: multibackend=true
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:4000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    deploy:
+      <<: *deploy-defaults
+
+  # -------------------------------------------------------------------
+  # Vector — recolector de logs de Docker hacia Logflare. INTERNO.
+  # Necesita el socket de Docker (solo en el manager) en modo lectura.
+  # -------------------------------------------------------------------
+  vector:
+    image: timberio/vector:0.28.1-alpine
+    command: ["--config", "/etc/vector/vector.yml"]
+    environment:
+      LOGFLARE_PUBLIC_ACCESS_TOKEN: ${LOGFLARE_PUBLIC_ACCESS_TOKEN}
+    volumes:
+      - ${SUPABASE_ASSETS_DIR}/logs/vector.yml:/etc/vector/vector.yml:ro,Z
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    deploy:
+      <<: *deploy-defaults
+
+  # -------------------------------------------------------------------
+  # Supavisor — pooler de conexiones Postgres. INTERNO por endurecimiento
+  # (regla #3): NO se publica 5432/6543 al host. Si necesitas acceso DB
+  # externo, exponelo de forma deliberada y documentada, nunca por default.
+  # -------------------------------------------------------------------
+  supavisor:
+    image: supabase/supavisor:1.1.56
+    environment:
+      PORT: 4000
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: _supabase
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_URL: ecto://supabase_admin:${POSTGRES_PASSWORD}@db:5432/_supabase
+      CLUSTER_POSTGRES: "true"
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      VAULT_ENC_KEY: ${VAULT_ENC_KEY}
+      API_JWT_SECRET: ${JWT_SECRET}
+      METRICS_JWT_SECRET: ${JWT_SECRET}
+      REGION: local
+      ERL_AFLAGS: -proto_dist inet_tcp
+      POOLER_TENANT_ID: ${POOLER_TENANT_ID}
+      POOLER_DEFAULT_POOL_SIZE: 20
+      POOLER_MAX_CLIENT_CONN: 100
+      POOLER_POOL_MODE: transaction
+    command:
+      - /bin/sh
+      - -c
+      - /app/bin/migrate && /app/bin/supavisor eval "$$(cat /etc/pooler/pooler.exs)" && /app/bin/server
+    volumes:
+      - ${SUPABASE_ASSETS_DIR}/pooler/pooler.exs:/etc/pooler/pooler.exs:ro,Z
+    deploy:
+      <<: *deploy-defaults
+
+  # -------------------------------------------------------------------
+  # Auth (GoTrue) — INTERNO (se accede via Kong /auth/v1).
+  # -------------------------------------------------------------------
+  auth:
+    image: supabase/gotrue:v2.164.0
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: https://${API_SUBDOMAIN}.${ROOT_DOMAIN}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      GOTRUE_SITE_URL: ${SITE_URL}
+      GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS}
+      GOTRUE_DISABLE_SIGNUP: "${DISABLE_SIGNUP}"
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: ${JWT_EXPIRY}
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "${ENABLE_EMAIL_SIGNUP}"
+      GOTRUE_MAILER_AUTOCONFIRM: "${ENABLE_EMAIL_AUTOCONFIRM}"
+      GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
+      GOTRUE_SMTP_HOST: ${SMTP_HOST}
+      GOTRUE_SMTP_PORT: ${SMTP_PORT}
+      GOTRUE_SMTP_USER: ${SMTP_USER}
+      GOTRUE_SMTP_PASS: ${SMTP_PASS}
+      GOTRUE_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME}
+      GOTRUE_MAILER_URLPATHS_INVITE: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_CONFIRMATION: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_RECOVERY: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: /auth/v1/verify
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "${ENABLE_PHONE_SIGNUP}"
+      GOTRUE_SMS_AUTOCONFIRM: "${ENABLE_PHONE_AUTOCONFIRM}"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:9999/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    deploy:
+      <<: *deploy-defaults
+
+  # -------------------------------------------------------------------
+  # REST (PostgREST) — INTERNO (se accede via Kong /rest/v1).
+  # -------------------------------------------------------------------
+  rest:
+    image: postgrest/postgrest:v12.2.3
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS}
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
+      PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
+    command: ["postgrest"]
+    deploy:
+      <<: *deploy-defaults
+
+  # -------------------------------------------------------------------
+  # Realtime — INTERNO (se accede via Kong /realtime/v1).
+  # -------------------------------------------------------------------
+  realtime:
+    image: supabase/realtime:v2.33.70
+    environment:
+      PORT: 4000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: supabase_admin
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      DB_AFTER_CONNECT_QUERY: "SET search_path TO _realtime"
+      # Realtime exige clave de EXACTAMENTE 16 caracteres (AES-128). El motor genera
+      # DB_ENC_KEY como hex de 8 bytes = 16 chars (128-bit, el maximo que admite el campo).
+      DB_ENC_KEY: ${DB_ENC_KEY}
+      API_JWT_SECRET: ${JWT_SECRET}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      ERL_AFLAGS: -proto_dist inet_tcp
+      DNS_NODES: "''"
+      RLIMIT_NOFILE: "10000"
+      APP_NAME: realtime
+      SEED_SELF_HOST: "true"
+      RUN_JANITOR: "true"
+    healthcheck:
+      # El endpoint exige JWT: sin el header devuelve 403 y Docker mata el
+      # servicio en bucle (healthcheck fallido). Mismo header que el upstream.
+      test: ["CMD", "curl", "-sfSk", "-H", "Authorization: Bearer ${ANON_KEY}", "http://127.0.0.1:4000/api/tenants/realtime-dev/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    deploy:
+      <<: *deploy-defaults
+
+  # -------------------------------------------------------------------
+  # Storage — INTERNO (se accede via Kong /storage/v1).
+  # -------------------------------------------------------------------
+  storage:
+    image: supabase/storage-api:v1.14.5
+    environment:
+      ANON_KEY: ${ANON_KEY}
+      SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      POSTGREST_URL: http://rest:3000
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      FILE_SIZE_LIMIT: 52428800
+      STORAGE_BACKEND: file
+      FILE_STORAGE_BACKEND_PATH: /var/lib/storage
+      TENANT_ID: stub
+      REGION: stub
+      GLOBAL_S3_BUCKET: stub
+      ENABLE_IMAGE_TRANSFORMATION: "true"
+      IMGPROXY_URL: http://imgproxy:5001
+    volumes:
+      - storage-data:/var/lib/storage:Z
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:5000/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    deploy:
+      <<: *deploy-defaults
+
+  # -------------------------------------------------------------------
+  # imgproxy — transformacion de imagenes para Storage. INTERNO.
+  # -------------------------------------------------------------------
+  imgproxy:
+    image: darthsim/imgproxy:v3.8.0
+    environment:
+      IMGPROXY_BIND: ":5001"
+      IMGPROXY_LOCAL_FILESYSTEM_ROOT: /
+      IMGPROXY_USE_ETAG: "true"
+      IMGPROXY_ENABLE_WEBP_DETECTION: "${IMGPROXY_ENABLE_WEBP_DETECTION}"
+    volumes:
+      - storage-data:/var/lib/storage:Z
+    healthcheck:
+      test: ["CMD", "imgproxy", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    deploy:
+      <<: *deploy-defaults
+
+  # -------------------------------------------------------------------
+  # postgres-meta — API interna de metadatos para Studio. INTERNO.
+  # -------------------------------------------------------------------
+  meta:
+    image: supabase/postgres-meta:v0.84.2
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: db
+      PG_META_DB_PORT: 5432
+      PG_META_DB_NAME: ${POSTGRES_DB}
+      PG_META_DB_USER: supabase_admin
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+    deploy:
+      <<: *deploy-defaults
+
+  # -------------------------------------------------------------------
+  # Edge Functions (Deno) — INTERNO (se accede via Kong /functions/v1).
+  # -------------------------------------------------------------------
+  functions:
+    image: supabase/edge-runtime:v1.66.5
+    environment:
+      JWT_SECRET: ${JWT_SECRET}
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      SUPABASE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      VERIFY_JWT: "${FUNCTIONS_VERIFY_JWT}"
+    command:
+      - start
+      - --main-service
+      - /home/deno/functions/main
+    volumes:
+      - ${SUPABASE_ASSETS_DIR}/functions:/home/deno/functions:ro,Z
+    deploy:
+      <<: *deploy-defaults
+
+  # -------------------------------------------------------------------
+  # Kong — API gateway. PUBLICO via Traefik (router supabase_api).
+  # El puerto admin (8001) NUNCA se publica; solo se enruta 8000.
+  # La autenticacion de la API es por JWT (anon/service keys).
+  # -------------------------------------------------------------------
+  kong:
+    image: kong:2.8.1
+    entrypoint: bash -c 'eval "echo \"$$(cat ~/temp.yml)\"" > ~/kong.yml && /docker-entrypoint.sh kong docker-start'
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+    volumes:
+      - ${SUPABASE_ASSETS_DIR}/api/kong.yml:/home/kong/temp.yml:ro,Z
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        - traefik.enable=true
+        - traefik.docker.network=${NETWORK}
+        - traefik.http.routers.supabase_api.rule=Host(`${API_SUBDOMAIN}.${ROOT_DOMAIN}`)
+        - traefik.http.routers.supabase_api.entrypoints=websecure
+        - traefik.http.routers.supabase_api.tls=true
+        - traefik.http.routers.supabase_api.tls.certresolver=letsencryptresolver
+        - traefik.http.services.supabase_api.loadbalancer.server.port=8000
+
+  # -------------------------------------------------------------------
+  # Studio — dashboard admin. PUBLICO via Traefik (router supabase_studio)
+  # PROTEGIDO por middleware basicauth de Traefik.
+  # >>> LECCION DE LA AUDITORIA: Studio JAMAS queda expuesto sin login. <<<
+  # -------------------------------------------------------------------
+  studio:
+    image: supabase/studio:20241202-71e5240
+    environment:
+      # Sin esto Next.js escucha SOLO en la IP del contenedor (usa el hostname
+      # como bind), el healthcheck contra 127.0.0.1 da ECONNREFUSED y Swarm
+      # reinicia el servicio en bucle para siempre.
+      HOSTNAME: "0.0.0.0"
+      STUDIO_PG_META_URL: http://meta:8080
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
+      DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_PUBLIC_URL: https://${API_SUBDOMAIN}.${ROOT_DOMAIN}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      AUTH_JWT_SECRET: ${JWT_SECRET}
+      LOGFLARE_PRIVATE_ACCESS_TOKEN: ${LOGFLARE_PRIVATE_ACCESS_TOKEN}
+      LOGFLARE_URL: http://analytics:4000
+      NEXT_PUBLIC_ENABLE_LOGS: "true"
+      NEXT_ANALYTICS_BACKEND_PROVIDER: postgres
+    healthcheck:
+      # /api/platform/profile NO existe en esta imagen (404) y dejaba a Studio
+      # reiniciando para siempre; /api/profile sí responde 200 y prueba que la
+      # app sirve de verdad (no solo el HTML estático).
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/profile').then((r)=>{if(r.status!==200)throw new Error(r.status)})"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    deploy:
+      <<: *deploy-defaults
+      labels:
+        - traefik.enable=true
+        - traefik.docker.network=${NETWORK}
+        - traefik.http.routers.supabase_studio.rule=Host(`${STUDIO_SUBDOMAIN}.${ROOT_DOMAIN}`)
+        - traefik.http.routers.supabase_studio.entrypoints=websecure
+        - traefik.http.routers.supabase_studio.tls=true
+        - traefik.http.routers.supabase_studio.tls.certresolver=letsencryptresolver
+        - traefik.http.services.supabase_studio.loadbalancer.server.port=3000
+        # basicauth OBLIGATORIO. ${STUDIO_PASS_BCRYPT} = hash bcrypt (con '$' escapado como '$$').
+        - traefik.http.middlewares.supabase_studio_auth.basicauth.users=${STUDIO_USER}:${STUDIO_PASS_BCRYPT}
+        - traefik.http.routers.supabase_studio.middlewares=supabase_studio_auth
+
+volumes:
+  db-data:
+  db-config:
+  storage-data:
+
+# Red overlay externa compartida de InventOS (creada por el motor / stack de Traefik).
+# Toda la comunicacion interna (db, cache, servicios) viaja por aqui; nada se publica al host.
+networks:
+  default:
+    external: true
+    name: ${NETWORK}

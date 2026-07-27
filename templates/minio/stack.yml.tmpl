@@ -1,0 +1,96 @@
+version: "3.8"
+
+# ==============================================================================
+# InventOS · Plantilla endurecida: MinIO (almacenamiento de objetos S3)
+# ------------------------------------------------------------------------------
+# Servidor de objetos compatible con la API S3 de AWS. Expone DOS superficies,
+# cada una con su router websecure (TLS) propio a traves de Traefik:
+#   - API S3   (puerto 9000) -> https://${MINIO_API_SUBDOMAIN}.${BASE_DOMAIN}
+#   - Consola  (puerto 9001) -> https://${MINIO_CONSOLE_SUBDOMAIN}.${BASE_DOMAIN}
+#
+# ENDURECIMIENTO:
+#   - Credenciales root SOLO como tokens ${...}; las genera el motor en el deploy
+#     (regla #1/#4). NUNCA el default publico de upstream (minioadmin/minioadmin).
+#   - Consola detras del LOGIN PROPIO de MinIO (regla #2): nadie entra al panel
+#     sin las credenciales root o un usuario IAM.
+#   - API S3 autenticada por firma AWS SigV4. Acceso anonimo DESACTIVADO: no se
+#     crea ningun bucket publico por default (ver README para habilitarlo bajo
+#     demanda).
+#   - TLS en ambos routers via letsencryptresolver; redirect HTTP->HTTPS global
+#     lo aplica Traefik (regla #5).
+# ==============================================================================
+
+services:
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z   # tag FIJO (nunca :latest) — reproducibilidad + supply-chain (regla #6)
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9001"                     # consola web en 9001; API S3 en 9000 (default)
+    environment:
+      # Credenciales root: las genera e interpola el motor (regla #1/#4).
+      # Reemplazan el default publico de upstream (minioadmin/minioadmin).
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD}"
+      # URL publica de la API S3: MinIO la usa para firmar presigned URLs y para
+      # que la consola sepa a que endpoint apuntar detras del proxy TLS.
+      MINIO_SERVER_URL: "https://${MINIO_API_SUBDOMAIN}.${BASE_DOMAIN}"
+      # URL publica de la consola: necesaria para que los redirects del panel
+      # funcionen correctamente detras de Traefik (host distinto al de la API).
+      MINIO_BROWSER_REDIRECT_URL: "https://${MINIO_CONSOLE_SUBDOMAIN}.${BASE_DOMAIN}"
+    volumes:
+      - minio_data:/data
+    networks:
+      - inventnet
+    # NOTA: sin seccion 'ports:' — MinIO no publica puertos al host. Todo el
+    # trafico entra por Traefik (unico servicio con 80/443 publicados).
+    healthcheck:
+      # Endpoint de liveness interno de MinIO (patron canonico de upstream).
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      mode: replicated
+      replicas: 1                    # regla #7
+      placement:
+        constraints:
+          - node.role == manager     # regla #7
+      restart_policy:
+        condition: on-failure
+      labels:
+        - "traefik.enable=true"
+        # --- La red por la que Traefik alcanza el servicio ---
+        - "traefik.docker.network=${NETWORK}"
+
+        # =====================================================================
+        # Router API S3 (puerto 9000) -> subdominio ${MINIO_API_SUBDOMAIN}
+        # Autenticada por firma AWS SigV4. Publica por diseno (clientes S3).
+        # =====================================================================
+        - "traefik.http.routers.minio_api.rule=Host(`${MINIO_API_SUBDOMAIN}.${BASE_DOMAIN}`)"
+        - "traefik.http.routers.minio_api.entrypoints=websecure"
+        - "traefik.http.routers.minio_api.tls=true"
+        - "traefik.http.routers.minio_api.tls.certresolver=letsencryptresolver"
+        - "traefik.http.routers.minio_api.service=minio_api"
+        - "traefik.http.services.minio_api.loadbalancer.server.port=9000"
+
+        # =====================================================================
+        # Router Consola (puerto 9001) -> subdominio ${MINIO_CONSOLE_SUBDOMAIN}
+        # Protegida por el LOGIN PROPIO de MinIO (regla #2). Sin basicauth extra.
+        # =====================================================================
+        - "traefik.http.routers.minio_console.rule=Host(`${MINIO_CONSOLE_SUBDOMAIN}.${BASE_DOMAIN}`)"
+        - "traefik.http.routers.minio_console.entrypoints=websecure"
+        - "traefik.http.routers.minio_console.tls=true"
+        - "traefik.http.routers.minio_console.tls.certresolver=letsencryptresolver"
+        - "traefik.http.routers.minio_console.service=minio_console"
+        - "traefik.http.services.minio_console.loadbalancer.server.port=9001"
+
+networks:
+  inventnet:
+    external: true                   # la crea el preflight del motor; compartida por todos los stacks
+    name: ${NETWORK}
+
+volumes:
+  minio_data:

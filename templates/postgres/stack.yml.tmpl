@@ -1,0 +1,56 @@
+# InventOS — plantilla endurecida: PostgreSQL 16 (standalone)
+# Base de datos para apps que necesitan la suya propia (n8n, Evolution, Typebot).
+# Endurecimiento aplicado:
+#   - SIN puerto al host: solo red overlay interna (regla 3).
+#   - Password fuerte generado por el motor en deploy (256-bit); nada literal (regla 1).
+#   - Healthcheck pg_isready; volumen nombrado persistente.
+#   - replicas: 1 + placement en manager (regla 7); tag de imagen FIJO (regla 6).
+# Los tokens ${VAR} los rellena el motor de deploy por interpolación de env.
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16.6          # tag FIJO — nunca :latest (regla 6, reproducibilidad/supply-chain)
+    # SIN bloque 'ports:' — la base de datos JAMÁS publica puerto al host (regla 3).
+    # Solo es alcanzable por la red overlay interna, por nombre de servicio Swarm.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}   # secret hex 32 bytes (256-bit) — generado en deploy
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Guarda los datos en un subdirectorio: evita conflictos con el punto de montaje del volumen.
+      PGDATA: /var/lib/postgresql/data/pgdata
+      # Checksums de datos: detecta corrupción silenciosa en disco (se aplica en el init inicial).
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ${NETWORK}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 1m         # apagado limpio de Postgres antes de matar el contenedor
+    deploy:
+      mode: replicated
+      replicas: 1                  # regla 7 — una sola réplica (servicio con estado)
+      placement:
+        constraints:
+          - node.role == manager   # regla 7 — corre en el nodo manager
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      update_config:
+        order: stop-first          # volumen RWO: parar la vieja réplica antes de arrancar la nueva
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  # Red overlay externa compartida (la crea el motor / Traefik). Default: inventnet.
+  ${NETWORK}:
+    external: true

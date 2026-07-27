@@ -1,0 +1,47 @@
+{
+  "id": "typebot",
+  "name": "Typebot",
+  "role": "Constructor de chatbots conversacionales (builder + viewer)",
+  "category": "automation",
+  "images": {
+    "builder": "baptistearno/typebot-builder:2.27.0",
+    "viewer": "baptistearno/typebot-viewer:2.27.0"
+  },
+  "requires": ["traefik", "postgres"],
+  "params": [
+    { "key": "TYPEBOT_BUILDER_SUBDOMAIN", "prompt": "Subdominio del builder (panel de construccion)", "default": "bot" },
+    { "key": "TYPEBOT_VIEWER_SUBDOMAIN", "prompt": "Subdominio del viewer (chat publico embebible)", "default": "chat" },
+    { "key": "TYPEBOT_DB", "prompt": "Base de datos de Typebot en Postgres", "default": "typebot" },
+    { "key": "ADMIN_EMAIL", "prompt": "Email del administrador/owner de Typebot", "default": "" },
+    { "key": "DISABLE_SIGNUP", "prompt": "Deshabilitar registro de nuevas cuentas en el builder (poner 'true' tras el onboarding)", "default": "false" },
+    { "key": "SMTP_HOST", "prompt": "Host SMTP para enviar los magic-link de login por email (requerido para poder iniciar sesion)", "default": "" },
+    { "key": "SMTP_PORT", "prompt": "Puerto SMTP", "default": "587" },
+    { "key": "SMTP_USERNAME", "prompt": "Usuario SMTP", "default": "" },
+    { "key": "SMTP_PASSWORD", "prompt": "Password SMTP (credencial del operador, no se genera)", "default": "", "secret": true },
+    { "key": "SMTP_SECURE", "prompt": "SMTP sobre TLS directo (true para puerto 465, false para STARTTLS en 587)", "default": "false" },
+    { "key": "NEXT_PUBLIC_SMTP_FROM", "prompt": "Remitente de los emails (ej. 'Typebot <no-reply@tudominio.com>')", "default": "" }
+  ],
+  "secrets": [
+    { "key": "ENCRYPTION_SECRET", "type": "base64url", "bytes": 24, "note": "Typebot exige EXACTAMENTE 32 caracteres para la clave AES-256-GCM; 24 bytes en base64url = 32 chars. Debe ser identico en builder y viewer." }
+  ],
+  "consumes": [
+    { "key": "DOMAIN", "from": "global", "note": "Dominio base para los routers de Traefik y las URLs publicas" },
+    { "key": "NETWORK", "from": "global", "note": "Red overlay externa compartida (default inventnet)" },
+    { "key": "POSTGRES_HOST", "from": "postgres", "default": "postgres", "note": "Nombre del servicio Postgres en la red overlay" },
+    { "key": "POSTGRES_USER", "from": "postgres", "default": "postgres", "note": "Usuario de Postgres" },
+    { "key": "POSTGRES_PASSWORD", "from": "postgres", "note": "Secreto generado por el stack postgres; nunca literal aqui" }
+  ],
+  "adminAuth": [],
+  "exposes": [
+    { "name": "builder", "subdomainParam": "TYPEBOT_BUILDER_SUBDOMAIN", "servicePort": 3000 },
+    { "name": "viewer", "subdomainParam": "TYPEBOT_VIEWER_SUBDOMAIN", "servicePort": 3000 }
+  ],
+  "internalOnly": [],
+  "healthcheck": {
+    "service": "typebot-builder",
+    "cmd": "node -e \"require('http').get('http://127.0.0.1:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\""
+  },
+  "credentialsOut": ["ENCRYPTION_SECRET"],
+  "adminNote": "El builder (panel de construccion) exige login propio de Typebot (owner por email / magic-link), por eso NO se anade basicauth de Traefik: la app ya cierra su superficie admin (a diferencia de Supabase Studio, sin login propio). El viewer es publico por diseno (sirve los bots a usuarios finales) y NO lleva frameDeny para poder embeberse en iframes de los clientes. Endurecimiento extra disponible: ADMIN_EMAIL fija el owner y DISABLE_SIGNUP=true cierra el registro tras el onboarding.",
+  "dbSetup": "La base ${TYPEBOT_DB} debe existir en Postgres antes del primer arranque; Typebot corre sus migraciones (Prisma) al iniciar."
+}

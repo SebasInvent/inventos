@@ -1,0 +1,90 @@
+{
+  "id": "supabase",
+  "name": "Supabase",
+  "role": "DB + Auth + Storage + REST/Realtime + Edge Functions",
+  "category": "backend",
+  "requires": ["traefik"],
+  "params": [
+    { "key": "ROOT_DOMAIN", "prompt": "Dominio raiz (ej. example.com)", "default": "" },
+    { "key": "NETWORK", "prompt": "Nombre de la red overlay externa compartida (la crea el stack de traefik)", "default": "inventnet" },
+    { "key": "API_SUBDOMAIN", "prompt": "Subdominio de la API (Kong)", "default": "api" },
+    { "key": "STUDIO_SUBDOMAIN", "prompt": "Subdominio del Studio (dashboard)", "default": "studio" },
+    { "key": "POSTGRES_DB", "prompt": "Nombre de la base de datos principal", "default": "postgres" },
+    { "key": "JWT_EXPIRY", "prompt": "Expiracion de JWT en segundos", "default": "3600" },
+    { "key": "PGRST_DB_SCHEMAS", "prompt": "Esquemas expuestos por PostgREST", "default": "public,storage,graphql_public" },
+    { "key": "STUDIO_DEFAULT_ORGANIZATION", "prompt": "Nombre de la organizacion por defecto en Studio", "default": "Invent Agency" },
+    { "key": "STUDIO_DEFAULT_PROJECT", "prompt": "Nombre del proyecto por defecto en Studio", "default": "Invent Agency" },
+    { "key": "SITE_URL", "prompt": "URL del frontend/app (redirect base de Auth)", "default": "http://localhost:3000" },
+    { "key": "ADDITIONAL_REDIRECT_URLS", "prompt": "URLs adicionales permitidas para redirect de Auth (coma-separadas)", "default": "" },
+    { "key": "DISABLE_SIGNUP", "prompt": "Deshabilitar registro publico de usuarios (true/false)", "default": "false" },
+    { "key": "ENABLE_EMAIL_SIGNUP", "prompt": "Habilitar registro por email (true/false)", "default": "true" },
+    { "key": "ENABLE_EMAIL_AUTOCONFIRM", "prompt": "Auto-confirmar email sin verificacion (true/false)", "default": "false" },
+    { "key": "ENABLE_PHONE_SIGNUP", "prompt": "Habilitar registro por telefono (true/false)", "default": "false" },
+    { "key": "ENABLE_PHONE_AUTOCONFIRM", "prompt": "Auto-confirmar telefono sin verificacion (true/false)", "default": "false" },
+    { "key": "SMTP_ADMIN_EMAIL", "prompt": "Email admin del SMTP (remitente)", "default": "admin@example.com" },
+    { "key": "SMTP_HOST", "prompt": "Host SMTP (vacio = email deshabilitado)", "default": "" },
+    { "key": "SMTP_PORT", "prompt": "Puerto SMTP", "default": "587" },
+    { "key": "SMTP_USER", "prompt": "Usuario SMTP", "default": "" },
+    { "key": "SMTP_PASS", "prompt": "Password SMTP (credencial externa provista por el operador)", "default": "", "sensitive": true },
+    { "key": "SMTP_SENDER_NAME", "prompt": "Nombre visible del remitente de emails", "default": "Invent Agency" },
+    { "key": "FUNCTIONS_VERIFY_JWT", "prompt": "Exigir JWT valido en Edge Functions (true/false)", "default": "true" },
+    { "key": "POOLER_TENANT_ID", "prompt": "Tenant ID del pooler (Supavisor)", "default": "inventos" },
+    { "key": "DASHBOARD_USERNAME", "prompt": "Usuario del dashboard interno de Kong", "default": "supabase" },
+    { "key": "STUDIO_USER", "prompt": "Usuario del basicauth de Studio (Traefik)", "default": "admin" },
+    { "key": "IMGPROXY_ENABLE_WEBP_DETECTION", "prompt": "Deteccion WebP en imgproxy (true/false)", "default": "true" },
+    { "key": "SUPABASE_ASSETS_DIR", "prompt": "Ruta en el server con los assets de Supabase (db/, api/, logs/, pooler/, functions/) de la version fijada", "default": "/opt/inventos/supabase" }
+  ],
+  "secrets": [
+    { "key": "POSTGRES_PASSWORD", "type": "hex", "bytes": 32, "desc": "Password de Postgres (256-bit)" },
+    { "key": "JWT_SECRET", "type": "hex", "bytes": 32, "desc": "Secreto HS256 raiz; genera ANON_KEY y SERVICE_ROLE_KEY" },
+    { "key": "ANON_KEY", "type": "supabase-jwt", "role": "anon", "from": "JWT_SECRET", "desc": "JWT publico (rol anon), firmado HS256 con JWT_SECRET" },
+    { "key": "SERVICE_ROLE_KEY", "type": "supabase-jwt", "role": "service_role", "from": "JWT_SECRET", "desc": "JWT privilegiado (rol service_role), firmado HS256 con JWT_SECRET" },
+    { "key": "DASHBOARD_PASSWORD", "type": "base64url", "bytes": 24, "desc": "Password del dashboard interno de Kong" },
+    { "key": "SECRET_KEY_BASE", "type": "base64url", "bytes": 64, "desc": "Secreto de sesion Phoenix (Realtime y Supavisor)" },
+    { "key": "VAULT_ENC_KEY", "type": "hex", "bytes": 16, "desc": "Clave AES-256 del vault de Supavisor; DEBE medir exactamente 32 caracteres (hex 16 bytes) — Erlang la usa como clave cruda y con otro largo tira 'Unknown cipher or invalid key size'" },
+    { "key": "DB_ENC_KEY", "type": "hex", "bytes": 8, "desc": "Clave AES-128 de Realtime; DEBE ser exactamente 16 caracteres (hex 8 bytes = 16 chars = 128-bit, tope del campo)" },
+    { "key": "LOGFLARE_PUBLIC_ACCESS_TOKEN", "type": "base64url", "bytes": 32, "desc": "Token publico de Logflare (ingest de Vector)" },
+    { "key": "LOGFLARE_PRIVATE_ACCESS_TOKEN", "type": "base64url", "bytes": 32, "desc": "Token privado de Logflare (Studio/analytics)" },
+    { "key": "STUDIO_PASS", "type": "base64url", "bytes": 24, "desc": "Password en claro del basicauth de Studio (se muestra una vez)" },
+    { "key": "STUDIO_PASS_BCRYPT", "type": "bcrypt", "from": "STUDIO_PASS", "desc": "Hash bcrypt de STUDIO_PASS para el middleware basicauth de Traefik; el '$' debe emitirse escapado como '$$' en el YAML renderizado" }
+  ],
+  "adminAuth": [
+    { "router": "supabase_studio", "user": "STUDIO_USER", "pass": "STUDIO_PASS" }
+  ],
+  "exposes": [
+    { "name": "api", "subdomainParam": "API_SUBDOMAIN", "servicePort": 8000 },
+    { "name": "studio", "subdomainParam": "STUDIO_SUBDOMAIN", "servicePort": 3000, "protectedBy": "basicauth" }
+  ],
+  "internalOnly": [
+    "supabase_db",
+    "supabase_analytics",
+    "supabase_vector",
+    "supabase_supavisor",
+    "supabase_auth",
+    "supabase_rest",
+    "supabase_realtime",
+    "supabase_storage",
+    "supabase_imgproxy",
+    "supabase_meta",
+    "supabase_functions"
+  ],
+  "healthcheck": { "service": "supabase_db", "cmd": "pg_isready" },
+  "assets": {
+    "dir": "SUPABASE_ASSETS_DIR",
+    "note": "Ficheros de bootstrap NO-secretos de la version fijada (subdir db/, api/kong.yml, logs/vector.yml, pooler/pooler.exs, functions/main). El motor debe subirlos al server antes del deploy.",
+    "files": [
+      "db/realtime.sql", "db/webhooks.sql", "db/roles.sql", "db/jwt.sql",
+      "db/_supabase.sql", "db/logs.sql", "db/pooler.sql",
+      "api/kong.yml", "logs/vector.yml", "pooler/pooler.exs", "functions/main/index.ts"
+    ]
+  },
+  "credentialsOut": [
+    "STUDIO_USER",
+    "STUDIO_PASS",
+    "ANON_KEY",
+    "SERVICE_ROLE_KEY",
+    "POSTGRES_PASSWORD",
+    "DASHBOARD_USERNAME",
+    "DASHBOARD_PASSWORD"
+  ]
+}

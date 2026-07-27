@@ -1,0 +1,29 @@
+{
+  "id": "n8n",
+  "name": "n8n",
+  "role": "Automatización de flujos (editor + webhook + worker, modo cola)",
+  "category": "automation",
+  "requires": ["traefik", "postgres", "redis"],
+  "params": [
+    { "key": "N8N_SUBDOMAIN", "prompt": "Subdominio del editor n8n", "default": "lab" },
+    { "key": "DB_POSTGRESDB_HOST", "prompt": "Host (servicio overlay) de Postgres", "default": "postgres" },
+    { "key": "DB_POSTGRESDB_PORT", "prompt": "Puerto de Postgres", "default": "5432" },
+    { "key": "DB_POSTGRESDB_DATABASE", "prompt": "Base de datos de n8n", "default": "n8n" },
+    { "key": "DB_POSTGRESDB_USER", "prompt": "Usuario de Postgres para n8n", "default": "n8n" },
+    { "key": "QUEUE_BULL_REDIS_HOST", "prompt": "Host (servicio overlay) de Redis", "default": "redis" },
+    { "key": "QUEUE_BULL_REDIS_PORT", "prompt": "Puerto de Redis", "default": "6379" },
+    { "key": "GENERIC_TIMEZONE", "prompt": "Zona horaria (IANA)", "default": "America/Bogota" }
+  ],
+  "secrets": [
+    { "key": "N8N_ENCRYPTION_KEY", "type": "base64url", "bytes": 32 },
+    { "key": "DB_POSTGRESDB_PASSWORD", "type": "hex", "bytes": 32, "provisionIn": "postgres" },
+    { "key": "QUEUE_BULL_REDIS_PASSWORD", "type": "hex", "bytes": 32, "sharedWith": "redis" }
+  ],
+  "adminAuth": [],
+  "exposes": [
+    { "name": "editor", "subdomainParam": "N8N_SUBDOMAIN", "servicePort": 5678 }
+  ],
+  "internalOnly": ["n8n_worker"],
+  "healthcheck": { "service": "n8n_main", "cmd": "wget -qO- http://127.0.0.1:5678/healthz" },
+  "credentialsOut": ["N8N_ENCRYPTION_KEY", "DB_POSTGRESDB_PASSWORD", "QUEUE_BULL_REDIS_PASSWORD"]
+}

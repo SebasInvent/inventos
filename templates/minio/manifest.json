@@ -1,0 +1,23 @@
+{
+  "id": "minio",
+  "name": "MinIO",
+  "role": "Almacenamiento de objetos compatible con S3 (API + consola)",
+  "category": "storage",
+  "requires": ["traefik"],
+  "params": [
+    { "key": "MINIO_API_SUBDOMAIN",     "prompt": "Subdominio de la API S3",  "default": "files" },
+    { "key": "MINIO_CONSOLE_SUBDOMAIN", "prompt": "Subdominio de la consola", "default": "files-console" }
+  ],
+  "secrets": [
+    { "key": "MINIO_ROOT_USER",     "type": "hex", "bytes": 8 },
+    { "key": "MINIO_ROOT_PASSWORD", "type": "hex", "bytes": 32 }
+  ],
+  "adminAuth": [],
+  "exposes": [
+    { "name": "s3",      "subdomainParam": "MINIO_API_SUBDOMAIN",     "servicePort": 9000 },
+    { "name": "console", "subdomainParam": "MINIO_CONSOLE_SUBDOMAIN", "servicePort": 9001 }
+  ],
+  "internalOnly": [],
+  "healthcheck": { "service": "minio", "cmd": "curl -f http://localhost:9000/minio/health/live" },
+  "credentialsOut": ["MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD"]
+}

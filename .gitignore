@@ -1,0 +1,17 @@
+# Dependencias
+node_modules/
+
+# Build (se genera con `npm run build` / al publicar)
+dist/
+dist-gui/
+
+# App de escritorio empaquetada (electron-builder) — .app/.dmg, pesados
+dist-app/
+gui/dist/
+
+# Estado local del operador: secretos generados + credenciales. NUNCA a git.
+.inventos/
+
+# Varios
+*.log
+.DS_Store

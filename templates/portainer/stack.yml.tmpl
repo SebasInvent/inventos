@@ -1,0 +1,81 @@
+# =============================================================================
+# InventOS — Plantilla endurecida: Portainer CE (panel de contenedores / Swarm)
+# -----------------------------------------------------------------------------
+# Seguro de fábrica:
+#   - CERO secretos en la plantilla. Portainer NO trae contraseña por defecto:
+#     el usuario admin se crea en el PRIMER ARRANQUE desde la propia UI (login
+#     propio de la app). No hay ningún token de credencial porque el motor no
+#     necesita generar ninguna clave para este stack.
+#   - Panel admin SIEMPRE tras auth: el login propio y obligatorio de Portainer
+#     (regla de endurecimiento 2). No se añade basicauth de Traefik porque la
+#     app ya exige login para cualquier operación.
+#   - NO publica puertos al host (sin `ports:`): al panel solo se llega por
+#     Traefik (TLS) a través de la red overlay ${NETWORK}. Nunca queda un panel
+#     de gestión escuchando en un puerto público del host.
+#   - TLS por letsencryptresolver; el redirect HTTP->HTTPS lo fuerza Traefik.
+#   - Imagen con tag FIJO (jamás :latest). replicas:1, placement en manager.
+#
+# El socket de Docker se monta en lectura/escritura porque gestionar contenedores
+# ES la función de Portainer (no puede ser :ro como Traefik). Se mitiga con: login
+# propio, TLS, sin puertos al host, placement solo en manager y 2FA recomendado
+# (ver README). Por eso el placement en manager es obligatorio: el socket del
+# manager es el que expone la API de Swarm.
+#
+# Los tokens ${...} los rellena el motor de InventOS en el deploy por
+# interpolación de entorno — NO edites valores a mano ni pegues secretos aquí.
+#   ${NETWORK}              red overlay compartida (default: inventnet)
+#   ${DOMAIN}               dominio base para el router de Traefik
+#   ${PORTAINER_SUBDOMAIN}  subdominio del panel (default: panel)
+# Requiere el stack: traefik (mismo ${NETWORK}).
+# =============================================================================
+version: "3.8"
+
+services:
+  portainer:
+    # Tag FIJO (línea LTS 2.21) — jamás :latest (reproducibilidad + supply-chain).
+    image: portainer/portainer-ce:2.21.4
+    # Se conecta al Docker/Swarm local por el socket del nodo manager.
+    # Sin --admin-password*: el admin se crea en el primer arranque (login propio).
+    command: -H unix:///var/run/docker.sock
+    volumes:
+      # Datos de Portainer (usuarios, settings, endpoints). Volumen con nombre.
+      - portainer_data:/data
+      # Socket de Docker: RW e imprescindible para gestionar contenedores/stacks.
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - ${NETWORK}
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          # Obligatorio: solo el manager expone la API de Swarm por su socket.
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        failure_action: rollback
+        delay: 5s
+      labels:
+        # --- Ingress por Traefik (opt-in explícito; el resto no se enruta) -----
+        - "traefik.enable=true"
+        - "traefik.docker.network=${NETWORK}"
+        - "traefik.http.routers.portainer.rule=Host(`${PORTAINER_SUBDOMAIN}.${DOMAIN}`)"
+        - "traefik.http.routers.portainer.entrypoints=websecure"
+        - "traefik.http.routers.portainer.tls=true"
+        - "traefik.http.routers.portainer.tls.certresolver=letsencryptresolver"
+        # Traefik termina TLS y habla HTTP con Portainer en su puerto 9000, solo
+        # por la red overlay interna (ese puerto NUNCA se publica al host).
+        - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+
+volumes:
+  portainer_data:
+    name: portainer_data
+
+networks:
+  # Red overlay externa compartida por todos los stacks (la crea el preflight
+  # del motor: docker network create --driver overlay --attachable --opt encrypted).
+  ${NETWORK}:
+    external: true

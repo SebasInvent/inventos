@@ -1,0 +1,35 @@
+{
+  "id": "evolution",
+  "name": "Evolution API",
+  "role": "Gateway de WhatsApp (multi-instancia)",
+  "category": "messaging",
+  "image": "evoapicloud/evolution-api:v2.2.3",
+  "requires": ["traefik", "postgres", "redis"],
+  "params": [
+    { "key": "EVO_SUBDOMAIN", "prompt": "Subdominio de Evolution API", "default": "wa" },
+    { "key": "EVOLUTION_DB", "prompt": "Base de datos de Evolution en Postgres", "default": "evolution" }
+  ],
+  "secrets": [
+    { "key": "EVOLUTION_API_KEY", "type": "hex", "bytes": 32 }
+  ],
+  "consumes": [
+    { "key": "DOMAIN", "from": "global", "note": "Dominio base para el router de Traefik y SERVER_URL" },
+    { "key": "NETWORK", "from": "global", "note": "Red overlay externa compartida (default inventnet)" },
+    { "key": "POSTGRES_HOST", "from": "postgres", "default": "postgres", "note": "Nombre del servicio Postgres en la red overlay" },
+    { "key": "POSTGRES_USER", "from": "postgres", "default": "postgres", "note": "Usuario de Postgres" },
+    { "key": "POSTGRES_PASSWORD", "from": "postgres", "note": "Secreto generado por el stack postgres; nunca literal aquí" },
+    { "key": "REDIS_HOST", "from": "redis", "default": "redis", "note": "Nombre del servicio Redis en la red overlay" },
+    { "key": "REDIS_PASSWORD", "from": "redis", "note": "Secreto generado por el stack redis; nunca literal aquí" }
+  ],
+  "adminAuth": [],
+  "exposes": [
+    { "name": "manager", "subdomainParam": "EVO_SUBDOMAIN", "servicePort": 8080 }
+  ],
+  "internalOnly": [],
+  "healthcheck": {
+    "service": "evolution",
+    "cmd": "node -e \"require('http').get('http://localhost:8080',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\""
+  },
+  "credentialsOut": ["EVOLUTION_API_KEY"],
+  "adminNote": "El manager (/manager) y toda la API están protegidos por AUTHENTICATION_API_KEY (login propio de la app). No se protege con basicauth de Traefik porque la propia app ya exige la key en cada request; sin ella no se puede operar ninguna instancia."
+}

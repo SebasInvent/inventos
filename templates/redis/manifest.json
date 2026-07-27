@@ -1,0 +1,16 @@
+{
+  "id": "redis",
+  "name": "Redis",
+  "role": "Cache / almacen en memoria (key-value)",
+  "category": "cache",
+  "requires": [],
+  "params": [],
+  "secrets": [
+    { "key": "REDIS_PASSWORD", "type": "hex", "bytes": 24 }
+  ],
+  "adminAuth": [],
+  "exposes": [],
+  "internalOnly": ["redis"],
+  "healthcheck": { "service": "redis", "cmd": "redis-cli ping" },
+  "credentialsOut": ["REDIS_PASSWORD"]
+}

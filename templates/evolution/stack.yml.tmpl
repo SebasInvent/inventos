@@ -1,0 +1,92 @@
+# =============================================================================
+# InventOS — Plantilla endurecida: Evolution API v2 (Gateway de WhatsApp)
+# -----------------------------------------------------------------------------
+# Seguro de fábrica:
+#   - CERO secretos literales: todo valor sensible es un token ${VAR} que el
+#     motor de InventOS genera/inyecta en el deploy (ver manifest.json).
+#   - El manager (/manager) y TODA la API están protegidos por
+#     AUTHENTICATION_API_KEY (login propio de la app). No hay panel público.
+#   - Postgres y Redis NO publican puerto: se hablan solo por la red overlay.
+#   - TLS por letsencryptresolver; HTTP->HTTPS lo fuerza Traefik globalmente.
+#   - Imagen con tag FIJO (nunca :latest). replicas:1, placement en manager.
+# Requiere los stacks: traefik, postgres, redis (mismos ${NETWORK}).
+# =============================================================================
+version: "3.8"
+
+services:
+  evolution:
+    image: evoapicloud/evolution-api:v2.2.3
+    volumes:
+      - evolution_instances:/evolution/instances
+    networks:
+      - ${NETWORK}
+    environment:
+      # --- Servidor ---------------------------------------------------------
+      SERVER_URL: "https://${EVO_SUBDOMAIN}.${DOMAIN}"
+      LANGUAGE: "es"
+      DEL_INSTANCE: "false"
+      QRCODE_LIMIT: "30"
+
+      # --- Autenticación (protege manager + toda la API) --------------------
+      AUTHENTICATION_API_KEY: "${EVOLUTION_API_KEY}"
+      AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: "false"
+
+      # --- Base de datos: Postgres (solo red interna) -----------------------
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: "postgresql"
+      DATABASE_CONNECTION_URI: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${EVOLUTION_DB}?schema=public"
+      DATABASE_CONNECTION_CLIENT_NAME: "evolution"
+      DATABASE_SAVE_DATA_INSTANCE: "true"
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "true"
+      DATABASE_SAVE_MESSAGE_UPDATE: "true"
+      DATABASE_SAVE_DATA_CONTACTS: "true"
+      DATABASE_SAVE_DATA_CHATS: "true"
+      DATABASE_SAVE_DATA_LABELS: "true"
+      DATABASE_SAVE_DATA_HISTORIC: "true"
+
+      # --- Cache: Redis (solo red interna, con password) --------------------
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: "redis://default:${REDIS_PASSWORD}@${REDIS_HOST}:6379/6"
+      CACHE_REDIS_PREFIX_KEY: "evolution"
+      CACHE_REDIS_SAVE_INSTANCES: "false"
+      CACHE_LOCAL_ENABLED: "false"
+
+      # --- Logs -------------------------------------------------------------
+      LOG_LEVEL: "ERROR,WARN,INFO"
+      LOG_COLOR: "false"
+      LOG_BAILEYS: "error"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://localhost:8080',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 5s
+      labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network=${NETWORK}"
+        - "traefik.http.routers.evolution.rule=Host(`${EVO_SUBDOMAIN}.${DOMAIN}`)"
+        - "traefik.http.routers.evolution.entrypoints=websecure"
+        - "traefik.http.routers.evolution.tls=true"
+        - "traefik.http.routers.evolution.tls.certresolver=letsencryptresolver"
+        - "traefik.http.services.evolution.loadbalancer.server.port=8080"
+
+volumes:
+  evolution_instances:
+    name: evolution_instances
+
+networks:
+  ${NETWORK}:
+    external: true

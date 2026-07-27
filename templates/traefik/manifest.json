@@ -1,0 +1,47 @@
+{
+  "id": "traefik",
+  "name": "Traefik",
+  "role": "Reverse proxy + SSL (ingress base)",
+  "category": "base",
+  "base": true,
+  "image": "traefik:v3.7.6",
+  "requires": [],
+  "params": [
+    {
+      "key": "ACME_EMAIL",
+      "prompt": "Email para los avisos de Let's Encrypt (vencimiento de certificados)",
+      "default": ""
+    },
+    {
+      "key": "NETWORK",
+      "prompt": "Nombre de la red overlay compartida",
+      "default": "inventnet"
+    }
+  ],
+  "secrets": [],
+  "adminAuth": [],
+  "exposes": [],
+  "internalOnly": [],
+  "publishesPorts": [80, 443],
+  "createsNetwork": {
+    "nameParam": "NETWORK",
+    "driver": "overlay",
+    "attachable": true,
+    "encrypted": true
+  },
+  "volumes": ["traefik_letsencrypt"],
+  "dashboard": "disabled",
+  "certResolver": "letsencryptresolver",
+  "healthcheck": { "service": "traefik", "cmd": "traefik healthcheck --ping" },
+  "credentialsOut": [],
+  "hardening": [
+    "Único servicio con puertos al host (80/443, mode host); el resto va solo por la red overlay.",
+    "Dashboard y API desactivados (--api.dashboard=false, --api.insecure=false): sin superficie admin pública.",
+    "Redirect global y permanente HTTP -> HTTPS; TLS por defecto en websecure vía letsencryptresolver.",
+    "Socket de Docker montado en solo lectura (:ro).",
+    "exposedByDefault=false: ningún servicio se enruta sin opt-in explícito por label.",
+    "Tag de imagen fijo (traefik:v3.7.6), nunca :latest.",
+    "replicas: 1, placement node.role == manager.",
+    "Sin secretos en la plantilla; ACME_EMAIL y NETWORK son params, no secretos."
+  ]
+}

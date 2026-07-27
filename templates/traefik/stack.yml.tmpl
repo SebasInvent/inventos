@@ -1,0 +1,101 @@
+# =============================================================================
+# InventOS · Plantilla endurecida — Traefik v3 (ingress / reverse proxy + TLS)
+# -----------------------------------------------------------------------------
+# Único servicio del stack con puertos publicados al host (80 y 443, mode host).
+# Termina TLS con Let's Encrypt (challenge HTTP-01) y enruta al resto de las apps
+# por la red overlay ${NETWORK}. Dashboard/API DESACTIVADOS (seguro de fábrica).
+#
+# Los tokens ${...} los rellena el motor de InventOS en el deploy por
+# interpolación de entorno — NO edites valores a mano ni pegues secretos aquí.
+#   ${NETWORK}     nombre de la red overlay compartida (default: inventnet)
+#   ${ACME_EMAIL}  email de avisos de Let's Encrypt (vencimiento de certificados)
+# =============================================================================
+version: "3.8"
+
+services:
+  traefik:
+    # Tag FIJO — jamás :latest (reproducibilidad + supply-chain).
+    # v3.7.6 (la misma que corre en el server de Invent): negocia bien la API de
+    # Docker moderno (25+/28/29). v3.3.x caía a la API 1.24 que los daemons nuevos
+    # rechazan (mínimo 1.40) → el proveedor swarm no descubría NINGÚN router (todo
+    # daba 404). Hallado probando el deploy real contra Docker 29.
+    image: traefik:v3.7.6
+    command:
+      # --- Proveedor: Docker Swarm (lee las labels de Traefik de cada servicio) ---
+      - "--providers.swarm=true"
+      - "--providers.swarm.endpoint=unix:///var/run/docker.sock"
+      - "--providers.swarm.exposedByDefault=false"   # nada se expone salvo opt-in por label
+      - "--providers.swarm.network=${NETWORK}"
+      # --- Entrypoints: web (80) y websecure (443) ---
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # --- Redirect global y PERMANENTE de HTTP -> HTTPS ---
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.web.http.redirections.entrypoint.permanent=true"
+      # --- TLS por defecto en websecure (defensa en profundidad: ningún router sirve HTTP plano) ---
+      - "--entrypoints.websecure.http.tls=true"
+      - "--entrypoints.websecure.http.tls.certresolver=letsencryptresolver"
+      # --- Certresolver Let's Encrypt (ACME, challenge HTTP-01 vía entrypoint web) ---
+      - "--certificatesresolvers.letsencryptresolver.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencryptresolver.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencryptresolver.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencryptresolver.acme.storage=/etc/traefik/letsencrypt/acme.json"
+      # --- Dashboard/API CERRADOS: sin superficie admin pública ---
+      - "--api.dashboard=false"
+      - "--api.insecure=false"
+      # --- Operación ---
+      - "--ping=true"
+      - "--log.level=INFO"
+      - "--accesslog=true"
+      - "--global.sendanonymoususage=false"
+      - "--global.checknewversion=false"
+    ports:
+      # Único stack autorizado a publicar puertos al host.
+      # mode: host preserva la IP real del cliente (no la del ingress mesh de Swarm).
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: host
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: host
+    volumes:
+      # Socket de Docker en SOLO LECTURA — Traefik solo lee servicios, nunca escribe.
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      # Volumen persistente para acme.json (certificados). Traefik lo crea con chmod 600.
+      - "traefik_letsencrypt:/etc/traefik/letsencrypt"
+    networks:
+      - ${NETWORK}
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          # Necesita el socket del manager para leer los servicios del swarm.
+          - "node.role == manager"
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        failure_action: rollback
+        delay: 5s
+
+volumes:
+  traefik_letsencrypt:
+    driver: local
+
+networks:
+  # Red overlay compartida por todos los stacks. La crea el preflight del motor
+  # (docker network create --driver overlay --attachable --opt encrypted ${NETWORK});
+  # aquí se referencia como externa.
+  ${NETWORK}:
+    external: true

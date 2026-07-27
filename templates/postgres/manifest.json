@@ -1,0 +1,19 @@
+{
+  "id": "postgres",
+  "name": "PostgreSQL",
+  "role": "Base de datos (standalone)",
+  "category": "database",
+  "requires": [],
+  "params": [
+    { "key": "POSTGRES_USER", "prompt": "Usuario de PostgreSQL", "default": "postgres" },
+    { "key": "POSTGRES_DB", "prompt": "Nombre de la base de datos", "default": "app" }
+  ],
+  "secrets": [
+    { "key": "POSTGRES_PASSWORD", "type": "hex", "bytes": 32 }
+  ],
+  "adminAuth": [],
+  "exposes": [],
+  "internalOnly": ["postgres"],
+  "healthcheck": { "service": "postgres", "cmd": "pg_isready" },
+  "credentialsOut": ["POSTGRES_USER", "POSTGRES_DB", "POSTGRES_PASSWORD"]
+}

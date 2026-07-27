@@ -1,0 +1,157 @@
+# =============================================================================
+# InventOS · Plantilla endurecida · Typebot (builder + viewer)
+# -----------------------------------------------------------------------------
+# Docker Swarm stack (compose 3.8). Todos los ${TOKENS} los rellena el motor de
+# deploy por env-interpolation al renderizar. NINGUN secreto vive aqui: solo
+# tokens que el motor genera o que el operador provee (ver manifest.json).
+#
+# Requiere (deps): traefik (proxy + TLS), postgres (persistencia).
+# Login: Typebot gestiona su propio login obligatorio en el builder (owner por
+#        email / magic-link). El builder (panel admin) NUNCA queda sin auth.
+#        El viewer es publico por diseno (sirve los bots publicados a usuarios
+#        finales) y debe poder embeberse en iframes de sitios de clientes.
+# Seguro de fabrica:
+#   - CERO secretos literales: ENCRYPTION_SECRET es un token ${VAR} generado por
+#     el motor; las credenciales de Postgres se referencian por token.
+#   - Postgres NO publica puerto al host: se habla solo por la red overlay.
+#   - TLS por letsencryptresolver; HTTP->HTTPS lo fuerza Traefik globalmente.
+#   - Imagenes con tag FIJO (nunca :latest). replicas:1, placement en manager.
+# =============================================================================
+version: "3.8"
+
+# --- Env compartido por el builder y el viewer -------------------------------
+# Ambos procesos DEBEN compartir el mismo ENCRYPTION_SECRET y la misma DB; de lo
+# contrario el viewer no puede desencriptar variables/credenciales de los bots.
+x-typebot-env: &typebot-env
+  # -- Base de datos (Postgres, nunca publica puerto al host) --
+  DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${TYPEBOT_DB}"
+  # -- Cifrado de datos sensibles (clave AES-256-GCM, generada por el motor) --
+  # Typebot exige EXACTAMENTE 32 caracteres -> 24 bytes en base64url = 32 chars.
+  ENCRYPTION_SECRET: ${ENCRYPTION_SECRET}
+  # -- URLs publicas / proxy inverso Traefik (TLS lo termina Traefik) --
+  NEXTAUTH_URL: https://${TYPEBOT_BUILDER_SUBDOMAIN}.${DOMAIN}
+  NEXT_PUBLIC_VIEWER_URL: https://${TYPEBOT_VIEWER_SUBDOMAIN}.${DOMAIN}
+
+services:
+  # ---------------------------------------------------------------------------
+  # builder: la UI de construccion de bots + API + NextAuth. Panel admin: exige
+  # login (owner por email). Ruta publica en ${TYPEBOT_BUILDER_SUBDOMAIN}.
+  # ---------------------------------------------------------------------------
+  builder:
+    image: baptistearno/typebot-builder:2.27.0   # tag FIJO — nunca :latest (regla 6)
+    environment:
+      <<: *typebot-env
+      # -- Owner / admin: el email que recibe privilegios de administrador --
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      # -- Cierre de registro: tras el onboarding, poner "true" para que nadie
+      #    mas pueda crear cuentas en el builder publico (endurecimiento) --
+      DISABLE_SIGNUP: "${DISABLE_SIGNUP}"
+      # -- SMTP: necesario para el login por email (magic-link). Sin SMTP el
+      #    builder arranca igual, pero no podras iniciar sesion por email --
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_SECURE: "${SMTP_SECURE}"
+      NEXT_PUBLIC_SMTP_FROM: ${NEXT_PUBLIC_SMTP_FROM}
+    networks:
+      - net
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://127.0.0.1:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits:
+          memory: 1024M
+        reservations:
+          memory: 256M
+      labels:
+        - "traefik.enable=true"
+        - "traefik.swarm.network=${NETWORK}"
+        - "traefik.http.routers.typebot-builder.rule=Host(`${TYPEBOT_BUILDER_SUBDOMAIN}.${DOMAIN}`)"
+        - "traefik.http.routers.typebot-builder.entrypoints=websecure"
+        - "traefik.http.routers.typebot-builder.tls=true"
+        - "traefik.http.routers.typebot-builder.tls.certresolver=letsencryptresolver"
+        - "traefik.http.routers.typebot-builder.service=typebot-builder"
+        - "traefik.http.routers.typebot-builder.middlewares=typebot-builder-headers@swarm"
+        - "traefik.http.services.typebot-builder.loadbalancer.server.port=3000"
+        # Cabeceras de seguridad del panel admin (HSTS + anti-sniff + anti-clickjacking).
+        # frameDeny SI en el builder: el panel de administracion no debe embeberse.
+        - "traefik.http.middlewares.typebot-builder-headers.headers.stsSeconds=31536000"
+        - "traefik.http.middlewares.typebot-builder-headers.headers.stsIncludeSubdomains=true"
+        - "traefik.http.middlewares.typebot-builder-headers.headers.stsPreload=true"
+        - "traefik.http.middlewares.typebot-builder-headers.headers.contentTypeNosniff=true"
+        - "traefik.http.middlewares.typebot-builder-headers.headers.browserXssFilter=true"
+        - "traefik.http.middlewares.typebot-builder-headers.headers.frameDeny=true"
+
+  # ---------------------------------------------------------------------------
+  # viewer: sirve los bots publicados a los usuarios finales. Publico por diseno
+  # y EMBEBIBLE en iframes (por eso NO lleva frameDeny). Stateless (todo en DB).
+  # ---------------------------------------------------------------------------
+  viewer:
+    image: baptistearno/typebot-viewer:2.27.0   # tag FIJO — mismo release que el builder
+    environment:
+      <<: *typebot-env
+    networks:
+      - net
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://127.0.0.1:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits:
+          memory: 1024M
+        reservations:
+          memory: 256M
+      labels:
+        - "traefik.enable=true"
+        - "traefik.swarm.network=${NETWORK}"
+        - "traefik.http.routers.typebot-viewer.rule=Host(`${TYPEBOT_VIEWER_SUBDOMAIN}.${DOMAIN}`)"
+        - "traefik.http.routers.typebot-viewer.entrypoints=websecure"
+        - "traefik.http.routers.typebot-viewer.tls=true"
+        - "traefik.http.routers.typebot-viewer.tls.certresolver=letsencryptresolver"
+        - "traefik.http.routers.typebot-viewer.service=typebot-viewer"
+        - "traefik.http.routers.typebot-viewer.middlewares=typebot-viewer-headers@swarm"
+        - "traefik.http.services.typebot-viewer.loadbalancer.server.port=3000"
+        # Cabeceras del viewer: HSTS + anti-sniff, pero SIN frameDeny — el chat
+        # DEBE poder embeberse en los sitios de los clientes (iframe).
+        - "traefik.http.middlewares.typebot-viewer-headers.headers.stsSeconds=31536000"
+        - "traefik.http.middlewares.typebot-viewer-headers.headers.stsIncludeSubdomains=true"
+        - "traefik.http.middlewares.typebot-viewer-headers.headers.stsPreload=true"
+        - "traefik.http.middlewares.typebot-viewer-headers.headers.contentTypeNosniff=true"
+
+networks:
+  # Red overlay externa compartida (la crea el motor / Traefik). Default: inventnet.
+  net:
+    external: true
+    name: ${NETWORK}
