@@ -54,6 +54,7 @@
   "files": [
     "dist",
     "dist-gui",
+    "src",
     "templates",
     "README.md"
   ],
