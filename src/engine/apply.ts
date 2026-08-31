@@ -12,6 +12,7 @@
 //
 // Node 24 borra los tipos por type-stripping nativo (sin build).
 
+import { createHash } from 'node:crypto';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -176,7 +177,7 @@ export async function applyRecipe(recipe: Recipe, opts: ApplyOptions): Promise<A
   // que dos proyectos en el mismo host comparten volúmenes pero tienen secretos
   // distintos → n8n arranca con otra encryption key y entra en crash loop. Se
   // detecta ANTES de desplegar en vez de dejar que falle de forma confusa.
-  if (mode === 'apply') await assertStackOwnership(plan.order, opts.project);
+  if (mode === 'apply') await assertStackOwnership(plan.order, opts.project, opts.target);
 
   // Carpeta remota + red overlay compartida.
   await track('preflight', `Crear carpeta remota ${remoteBase}`, undefined,
@@ -409,11 +410,29 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Registra qué proyecto es dueño de cada stack y falla si otro intenta pisarlo.
- * El registro vive junto al estado (`~/.inventos/stacks.json`).
+ * Ruta del registro de propiedad de stacks para UN destino SSH.
+ *
+ * Los nombres de stack sólo colisionan dentro del mismo Docker Swarm. Un registro global hacía que
+ * desplegar `n8n` en el VPS B chocara con el `n8n` del VPS A, aunque fueran discos y enjambres
+ * distintos. La identidad incluye usuario, host y puerto; omite la credencial porque rotar una
+ * llave no convierte el servidor en otro. El hash evita usar datos de red como nombres de carpeta.
  */
-async function assertStackOwnership(stacks: string[], project: string): Promise<void> {
-  const registryPath = join(homedir(), '.inventos', 'stacks.json');
+export function stackOwnershipRegistryPath(
+  target: DeployTarget,
+  inventosHome = join(homedir(), '.inventos'),
+): string {
+  const identity = `${target.user}@${target.host.toLowerCase()}:${target.port ?? 22}`;
+  const targetHash = createHash('sha256').update(identity).digest('hex');
+  return join(inventosHome, 'targets', targetHash, 'stacks.json');
+}
+
+/** Registra qué proyecto es dueño de cada stack y falla si otro intenta pisarlo EN ESE destino. */
+async function assertStackOwnership(
+  stacks: string[],
+  project: string,
+  target: DeployTarget,
+): Promise<void> {
+  const registryPath = stackOwnershipRegistryPath(target);
   let owners: Record<string, string> = {};
   try {
     const parsed: unknown = JSON.parse(await readFile(registryPath, 'utf8'));
