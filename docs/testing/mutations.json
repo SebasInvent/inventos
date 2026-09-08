@@ -71,5 +71,19 @@
       "\u2716 failing tests:",
       "\u2716 same project slug in a different org cannot claim stacks or mutate owners (148.470292ms)"
     ]
+  },
+  {
+    "mutation": "canonical-equality",
+    "detected": true,
+    "summary": [
+      "\u2716 canonical cleanup permits exact equality between machine mtime and cycle anchor (56.943375ms)",
+      "\u2139 tests 1",
+      "\u2139 suites 0",
+      "\u2139 pass 0",
+      "\u2139 fail 1",
+      "\u2139 cancelled 0",
+      "\u2139 skipped 0",
+      "\u2139 todo 0"
+    ]
   }
 ]

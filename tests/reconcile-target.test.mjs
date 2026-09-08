@@ -90,7 +90,7 @@ for (const [name, change] of Object.entries({
 	data: (f) => f.set({ dataDirectoriesAbsent: false }),
 	instance: (f) => (f.receipt.instanceId = "456"),
 	cycle: (f) => (f.receipt.cycleId = "other"),
-	time: (f) => (f.receipt.reinstalledAt = fresh.machineIdMtime),
+	time: (f) => (f.receipt.reinstalledAt = "2026-09-08T00:00:01.001Z"),
 }))
 	test(`reject ${name} without touching registry`, async (t) => {
 		const f = await fixture(t);
@@ -318,4 +318,35 @@ test("ownership writer refuses writes outside shared target lock", async (t) => 
 		engine.assertStackOwnership(["n8n"], "previous", target, { home: f.home }),
 		/requires target lock/,
 	);
+});
+
+test("canonical cleanup permits exact equality between machine mtime and cycle anchor", async (t) => {
+	const f = await fixture(t);
+	f.receipt.reinstalledAt = fresh.machineIdMtime;
+	const r = await engine.reconcileTarget(f.input(), f.options);
+	assert.equal(r.sourceHash, r.archiveHash);
+});
+test("older Node runtime receives actionable error before filesystem writes", async (t) => {
+	const f = await fixture(t);
+	const version = process.versions.node;
+	Object.defineProperty(process.versions, "node", {
+		value: "18.0.0",
+		configurable: true,
+	});
+	try {
+		await assert.rejects(
+			engine.withTargetLock(
+				target,
+				async () => assert.fail(),
+				join(f.home, "unsupported"),
+			),
+			/Node.js 24/,
+		);
+		await assert.rejects(access(join(f.home, "unsupported")));
+	} finally {
+		Object.defineProperty(process.versions, "node", {
+			value: version,
+			configurable: true,
+		});
+	}
 });

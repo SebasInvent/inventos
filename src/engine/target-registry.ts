@@ -377,7 +377,7 @@ export async function reconcileTarget(request, options = {}) {
 				fail("Generation unchanged");
 			if (
 				!Number.isFinite(Date.parse(request.receipt.reinstalledAt)) ||
-				Date.parse(desired.machineIdMtime) <=
+				Date.parse(desired.machineIdMtime) <
 					Date.parse(request.receipt.reinstalledAt)
 			)
 				fail("Generation predates cycle anchor");
