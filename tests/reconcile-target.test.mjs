@@ -351,5 +351,64 @@ test("older Node runtime receives actionable error before filesystem writes", as
 	}
 });
 
-test('snapshot JSON key order survives durable storage roundtrip',async t=>{const f=await fixture(t);const reverse=value=>value&&typeof value==='object'&&!Array.isArray(value)?Object.fromEntries(Object.entries(value).reverse().map(([k,v])=>[k,reverse(v)])):value;const input=f.input();input.snapshot=reverse(input.snapshot);input.receipt=reverse(input.receipt);const result=await engine.reconcileTarget(input,f.options);assert.equal(result.sourceHash,result.archiveHash);});
-test('inspect requires matching reinstall authorization before observing target',async t=>{const f=await fixture(t);let called=false;await assert.rejects(engine.inspectTarget(f.request,{...f.options,observe:async()=>{called=true;return {...fresh,ip:target.host,services:[],containers:[],volumes:[],dockerPresent:false,dataDirectoriesAbsent:true};}}),/authorization/i);assert.equal(called,false);});
+test("snapshot JSON key order survives durable storage roundtrip", async (t) => {
+	const f = await fixture(t);
+	const reverse = (value) =>
+		value && typeof value === "object" && !Array.isArray(value)
+			? Object.fromEntries(
+					Object.entries(value)
+						.reverse()
+						.map(([k, v]) => [k, reverse(v)]),
+				)
+			: value;
+	const input = f.input();
+	input.snapshot = reverse(input.snapshot);
+	input.receipt = reverse(input.receipt);
+	const result = await engine.reconcileTarget(input, f.options);
+	assert.equal(result.sourceHash, result.archiveHash);
+});
+test("inspect requires matching reinstall authorization before observing target", async (t) => {
+	const f = await fixture(t);
+	let called = false;
+	await assert.rejects(
+		engine.inspectTarget(f.request, {
+			...f.options,
+			observe: async () => {
+				called = true;
+				return {
+					...fresh,
+					ip: target.host,
+					services: [],
+					containers: [],
+					volumes: [],
+					dockerPresent: false,
+					dataDirectoriesAbsent: true,
+				};
+			},
+		}),
+		/authorization/i,
+	);
+	assert.equal(called, false);
+});
+
+test("inspect authorization is durable and does not accept a different anchor on replay", async (t) => {
+	const f = await fixture(t);
+	const authorization = {
+		...f.request,
+		reinstalledAt: f.receipt.reinstalledAt,
+	};
+	await engine.inspectTarget({ ...f.request, authorization }, f.options);
+	await assert.rejects(
+		engine.inspectTarget(
+			{
+				...f.request,
+				authorization: {
+					...authorization,
+					reinstalledAt: "2026-09-08T00:00:00.001Z",
+				},
+			},
+			f.options,
+		),
+		/authorization changed/,
+	);
+});

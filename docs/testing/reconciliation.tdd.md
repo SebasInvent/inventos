@@ -27,3 +27,32 @@ Comandos: `node --test tests/*.test.mjs`, `node --experimental-test-coverage --t
 ## Rollout pendiente
 
 Requiere **Node.js >=24 con `node:sqlite`** en el coordinador; Node24 sólo está verificado localmente. El comando emite error explícito en runtime menor antes de tocar filesystem. No se habilita automáticamente ni se presume compatibilidad remota. Publicar motor, fijar su commit en empaquetador y probar tarball, desplegar API/worker juntos y realizar un ensayo con servidor libre autorizado siguen siendo gates externos. No hay prueba contra proveedor/VPS ni afirmación de producción o del recorrido integral.
+
+## Corrección de integración: mapas JSON y confianza SSH por ciclo
+
+La revisión contra SkyNet encontró dos defectos del primer candidato: una recarga de Firestore
+puede cambiar el orden de claves JSON y el motor comparaba su serialización; además, una reimagen
+cambia la clave SSH y el inspector no tenía una confianza nueva acotada. Ambas reproducciones
+fueron rojas (2 fallidas, 0 pasadas) antes del fix, commit f20e453.
+
+La igualdad usa `isDeepStrictEqual`, mientras el CAS y el hash del archivo original siguen siendo
+byte-exactos. `inspect-target` ahora requiere `{...base,authorization:{...base,reinstalledAt}}`,
+con el sello durable de autorización PUT que devuelve SkyNet. `reconcile-target` usa su receipt
+con ese mismo sello. El motor exige snapshot previo y guarda autorización inmutable por ciclo.
+
+El snapshot previo usa `StrictHostKeyChecking=yes`. Sólo inspect/reconcile autorizados usan
+`accept-new`, un `known_hosts` privado 0600 dentro del ciclo, `GlobalKnownHostsFile=/dev/null`
+y `UpdateHostKeys=no`. No hay `StrictHostKeyChecking=no`, escritura ni borrado de archivos globales.
+Root y el fallback ubuntu comparten la misma huella privada. Tras observar la generación nueva,
+se sella generación/hash de known_hosts y cualquier cambio posterior falla cerrado. Un primer
+sondeo que aún observa la generación anterior no sella confianza; descarta sólo su archivo
+privado provisional para permitir que el siguiente sondeo vea la clave de la reimagen real.
+Un archivo corrupto no se interpreta como ausencia ni se limpia para seguir.
+
+Prueba nueva con **OpenSSH real**: sshd sólo loopback, puerto efímero, llaves de prueba, ssh-agent
+independiente, conexión/rotación de hostkey reales. Demuestra rechazo inicial strict, autorización,
+sondeo de generación anterior, pin de nueva generación, replay con mapas reordenados, rechazo de
+clave cambiada, aislamiento entre ciclos y corrupción. Otra prueba captura argv de procesos SSH
+reales con un doble ejecutable y verifica política, ruta privada, root/ubuntu y cero conexión al
+cambiar autorización. Se mataron por separado los mutantes de JSON.stringify y StrictHostKeyChecking=no;
+ver `ssh-mutations.json`. No se conectó a VPS ni se modificó configuración SSH global.

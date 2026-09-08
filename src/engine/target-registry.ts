@@ -1,13 +1,10 @@
 // Registry lifecycle: a clean disk does not authorize forgetting unobserved ownership.
 // All writers use the same target lock, held across the complete apply or reconciliation.
+import { isDeepStrictEqual, promisify } from "node:util";
+import { execFile } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
-import {
-	mkdir,
-	lstat,
-	open,
-	rename,
-} from "node:fs/promises";
+import { mkdir, lstat, open, rename, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve, parse } from "node:path";
@@ -193,7 +190,7 @@ function base(request) {
 	};
 }
 function same(a, b) {
-	return JSON.stringify(a) === JSON.stringify(b);
+	return isDeepStrictEqual(a, b);
 }
 function checkBase(a, b) {
 	if (!same(base(a), base(b))) fail("Cycle/instance/target mismatch");
@@ -271,6 +268,10 @@ export function parseObservation(stdout) {
 	return out;
 }
 async function readTarget(target, script) {
+	target = {
+		...target,
+		sshOptions: target.sshOptions ?? ["StrictHostKeyChecking=yes"],
+	};
 	const opts = { mode: "apply", readOnly: true, timeoutMs: 30000 };
 	const first = await createTarget(target).exec(script, opts);
 	if (first.ok && first.executed && !first.timedOut) return first;
@@ -316,11 +317,122 @@ async function measured(target, options) {
 		fail("Malformed disk observation");
 	return o;
 }
+/** Only the authenticated worker's durable reinstall stamp enables lifecycle TOFU.
+ * Snapshot uses the previous strict host policy; this path never modifies global known_hosts.
+ */
+async function lifecycleMeasured(b, authorization, options) {
+	if (
+		!authorization ||
+		typeof authorization.reinstalledAt !== "string" ||
+		!Number.isFinite(Date.parse(authorization.reinstalledAt))
+	)
+		fail("Missing reinstall authorization");
+	checkBase(b, authorization);
+	const cycle = join(
+		dirname(stackOwnershipRegistryPath(b.target, options.home)),
+		"cycles",
+		b.cycleId,
+	);
+	await safeDirectory(cycle);
+	const snapshot = await json(join(cycle, "snapshot.json"));
+	if (!snapshot) fail("Authorization requires private snapshot");
+	checkBase(b, snapshot);
+	const approved = { ...b, reinstalledAt: authorization.reinstalledAt };
+	const authPath = join(cycle, "authorization.json");
+	const prior = await json(authPath);
+	if (prior && !same(prior, approved)) fail("Reinstall authorization changed");
+	if (!prior) await atomic(authPath, approved);
+	// Unit observers replace the transport only; CLI cannot supply this option.
+	if (options.observe) return measured(b.target, options);
+	const knownHosts = join(cycle, "known_hosts");
+	const sealPath = join(cycle, "ssh-generation.json");
+	const seal = await json(sealPath);
+	let original = await bytes(knownHosts);
+	if (
+		seal &&
+		(!original ||
+			hash(original) !== seal.knownHostsHash ||
+			!same(seal.authorization, approved))
+	)
+		fail("Private host-key evidence changed or missing");
+	if (original?.length) {
+		try {
+			await promisify(execFile)("ssh-keygen", ["-l", "-f", knownHosts], {
+				timeout: 10000,
+				maxBuffer: 65536,
+			});
+		} catch {
+			fail("Corrupt private known_hosts");
+		}
+	}
+	if (!original) {
+		const fd = await open(
+			knownHosts,
+			constants.O_WRONLY |
+				constants.O_CREAT |
+				constants.O_EXCL |
+				constants.O_NOFOLLOW,
+			0o600,
+		);
+		await fd.close();
+	}
+	const quoted = '"' + knownHosts.replace(/[\\"]/g, "\\$&") + '"';
+	const target = {
+		...b.target,
+		sshOptions: [
+			"StrictHostKeyChecking=accept-new",
+			"UserKnownHostsFile=" + quoted,
+			"GlobalKnownHostsFile=/dev/null",
+			"UpdateHostKeys=no",
+		],
+	};
+	let observation;
+	try {
+		observation = await measured(target, options);
+	} catch (error) {
+		// An unsealed attempt may have reached the pre-reimage host while the provider was rebooting.
+		// It has not attested a new generation. A sealed key is never reset on failure or replay.
+		if (!seal) {
+			await bytes(knownHosts);
+			await unlink(knownHosts);
+			await syncDirectory(cycle);
+		}
+		throw error;
+	}
+	if (
+		!seal &&
+		(observation.machineIdHash === snapshot.previousMachine.machineIdHash ||
+			Date.parse(observation.machineIdMtime) <
+				Date.parse(approved.reinstalledAt))
+	) {
+		await bytes(knownHosts);
+		await unlink(knownHosts);
+		await syncDirectory(cycle);
+		return observation;
+	}
+	const after = await bytes(knownHosts);
+	if (!after?.length) fail("SSH did not persist private host-key evidence");
+	if (seal) {
+		if (
+			hash(after) !== seal.knownHostsHash ||
+			!same(machine(observation), seal.generation)
+		)
+			fail("SSH generation changed within cycle");
+	} else {
+		await atomic(sealPath, {
+			schemaVersion: 1,
+			authorization: approved,
+			generation: machine(observation),
+			knownHostsHash: hash(after),
+		});
+	}
+	return observation;
+}
 export async function inspectTarget(request, options = {}) {
 	const b = base(request);
 	return withTargetLock(
 		b.target,
-		() => measured(b.target, options),
+		() => lifecycleMeasured(b, request.authorization, options),
 		options.home,
 	);
 }
@@ -378,7 +490,7 @@ export async function reconcileTarget(request, options = {}) {
 					Date.parse(request.receipt.reinstalledAt)
 			)
 				fail("Generation predates cycle anchor");
-			const observation = await measured(b.target, options);
+			const observation = await lifecycleMeasured(b, request.receipt, options);
 			if (!same(machine(observation), desired))
 				fail("Measured generation mismatch");
 			if (
