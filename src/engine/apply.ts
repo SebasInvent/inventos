@@ -12,7 +12,7 @@
 //
 // Node 24 borra los tipos por type-stripping nativo (sin build).
 
-import { assertStackOwnership, stackOwnershipRegistryPath, withTargetLock, observeMachineGeneration } from './target-registry.ts';
+import { assertStackOwnership, withTargetLock, observeMachineGeneration } from './target-registry.ts';
 export { stackOwnershipRegistryPath } from './target-registry.ts';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -117,8 +117,8 @@ async function applyRecipeLocked(recipe: Recipe, opts: ApplyOptions): Promise<Ap
 
   // Idempotencia: cargar los secretos ya generados en un apply anterior para
   // REUSARLOS (no rotar claves y romper servicios). Se guardan en apply real.
-  // Estado SIEMPRE en ~/.inventos/<proyecto>: consistente entre CLI, GUI y app de
-  // escritorio (una app lanzada desde Finder tiene cwd=/, no escribible).
+  // Estado bajo ~/.inventos; las organizaciones durables tienen namespace propio.
+  // CLI, GUI y app usan home, incluso si Finder lanza el proceso con cwd=/.
   const stateDir = opts.orgId
     ? join(homedir(), '.inventos', 'organizations', opts.orgId, opts.project)
     : join(homedir(), '.inventos', opts.project);

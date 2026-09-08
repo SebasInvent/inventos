@@ -6,10 +6,7 @@ import {
 	mkdir,
 	lstat,
 	open,
-	readFile,
 	rename,
-	unlink,
-	rmdir,
 } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
