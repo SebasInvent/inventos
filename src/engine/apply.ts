@@ -12,7 +12,8 @@
 //
 // Node 24 borra los tipos por type-stripping nativo (sin build).
 
-import { createHash } from 'node:crypto';
+import { assertStackOwnership, stackOwnershipRegistryPath, withTargetLock, observeMachineGeneration } from './target-registry.ts';
+export { stackOwnershipRegistryPath } from './target-registry.ts';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -31,6 +32,9 @@ export interface ApplyOptions {
   project: string;
   domain: string;
   target: DeployTarget;
+  orgId?: string;
+  workId?: string;
+  instanceId?: string;
   network?: string;
   acmeEmail?: string;
   adminUser?: string;
@@ -92,6 +96,12 @@ export interface ApplyResult {
  * corta ante el primer fallo remoto.
  */
 export async function applyRecipe(recipe: Recipe, opts: ApplyOptions): Promise<ApplyResult> {
+  if (!/^[A-Za-z0-9_-]{1,160}$/.test(opts.project)) throw new Error('Invalid project');
+  if (opts.execute === true) return withTargetLock(opts.target, () => applyRecipeLocked(recipe, opts));
+  return applyRecipeLocked(recipe, opts);
+}
+
+async function applyRecipeLocked(recipe: Recipe, opts: ApplyOptions): Promise<ApplyResult> {
   const mode: DeployMode = opts.execute === true ? 'apply' : 'plan';
   const network = opts.network ?? 'inventnet';
   const templatesDir = opts.templatesDir ?? TEMPLATES_DIR;
@@ -109,8 +119,15 @@ export async function applyRecipe(recipe: Recipe, opts: ApplyOptions): Promise<A
   // REUSARLOS (no rotar claves y romper servicios). Se guardan en apply real.
   // Estado SIEMPRE en ~/.inventos/<proyecto>: consistente entre CLI, GUI y app de
   // escritorio (una app lanzada desde Finder tiene cwd=/, no escribible).
-  const stateDir = join(homedir(), '.inventos', opts.project);
+  const stateDir = opts.orgId
+    ? join(homedir(), '.inventos', 'organizations', opts.orgId, opts.project)
+    : join(homedir(), '.inventos', opts.project);
   const secretsPath = join(stateDir, 'secrets.json');
+  // The ownership gate runs BEFORE reading/writing secrets for a colliding project slug.
+  if (mode === 'apply') {
+    const generation = isLocal(opts.target) ? null : await observeMachineGeneration(opts.target);
+    await assertStackOwnership(plan.order, opts.project, opts.target, { ...opts, generation });
+  }
   const existingSecrets = await loadSecrets(secretsPath);
 
   // La carpeta de assets de cada app cuelga de `remoteBase` (que en local es el
@@ -177,7 +194,7 @@ export async function applyRecipe(recipe: Recipe, opts: ApplyOptions): Promise<A
   // que dos proyectos en el mismo host comparten volúmenes pero tienen secretos
   // distintos → n8n arranca con otra encryption key y entra en crash loop. Se
   // detecta ANTES de desplegar en vez de dejar que falle de forma confusa.
-  if (mode === 'apply') await assertStackOwnership(plan.order, opts.project, opts.target);
+  // assertStackOwnership ran under this same operation lock before reading secrets.
 
   // Carpeta remota + red overlay compartida.
   await track('preflight', `Crear carpeta remota ${remoteBase}`, undefined,
@@ -407,53 +424,6 @@ function replicaCounts(output: string): { running: number; desired: number } {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-/**
- * Ruta del registro de propiedad de stacks para UN destino SSH.
- *
- * Los nombres de stack sólo colisionan dentro del mismo Docker Swarm. Un registro global hacía que
- * desplegar `n8n` en el VPS B chocara con el `n8n` del VPS A, aunque fueran discos y enjambres
- * distintos. La identidad incluye usuario, host y puerto; omite la credencial porque rotar una
- * llave no convierte el servidor en otro. El hash evita usar datos de red como nombres de carpeta.
- */
-export function stackOwnershipRegistryPath(
-  target: DeployTarget,
-  inventosHome = join(homedir(), '.inventos'),
-): string {
-  const identity = `${target.user}@${target.host.toLowerCase()}:${target.port ?? 22}`;
-  const targetHash = createHash('sha256').update(identity).digest('hex');
-  return join(inventosHome, 'targets', targetHash, 'stacks.json');
-}
-
-/** Registra qué proyecto es dueño de cada stack y falla si otro intenta pisarlo EN ESE destino. */
-async function assertStackOwnership(
-  stacks: string[],
-  project: string,
-  target: DeployTarget,
-): Promise<void> {
-  const registryPath = stackOwnershipRegistryPath(target);
-  let owners: Record<string, string> = {};
-  try {
-    const parsed: unknown = JSON.parse(await readFile(registryPath, 'utf8'));
-    if (typeof parsed === 'object' && parsed !== null) owners = parsed as Record<string, string>;
-  } catch { /* primera vez: registro vacío */ }
-
-  const clash = stacks.filter((s) => owners[s] !== undefined && owners[s] !== project);
-  if (clash.length > 0) {
-    const detail = clash.map((s) => `    ${s}  →  ya es del proyecto "${owners[s]}"`).join('\n');
-    const e = new Error(
-      `Estos stacks ya los desplegó otro proyecto en este destino:\n${detail}\n` +
-      `  Los stacks se llaman como la app, así que comparten volúmenes: reusarlos con los\n` +
-      `  secretos de "${project}" rompería los servicios (p. ej. n8n: "mismatching encryption keys").\n` +
-      `  Opciones:  volvé a usar --project ${owners[clash[0]!]}   |   borrá el stack viejo:  docker stack rm ${clash.join(' ')}`);
-    (e as Error & { expected?: boolean }).expected = true;
-    throw e;
-  }
-
-  for (const s of stacks) owners[s] = project;
-  await mkdir(dirname(registryPath), { recursive: true });
-  await writeFile(registryPath, JSON.stringify(owners, null, 2), { mode: 0o600 });
 }
 
 /**
