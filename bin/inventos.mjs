@@ -11,6 +11,7 @@ import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
+import { REGISTRY_COMMANDS, runRegistryCommand } from '../src/engine/registry-cli.mjs';
 import { planRecipe } from '../src/engine/index.ts';
 import { applyRecipe } from '../src/engine/apply.ts';
 import { printReport } from '../src/engine/report.ts';
@@ -36,6 +37,11 @@ const KNOWN_FLAGS = new Set([
 ]);
 
 async function main() {
+  if (REGISTRY_COMMANDS.includes(cmd)) {
+    try { process.stdout.write(JSON.stringify(await runRegistryCommand(cmd, argv.slice(1))) + '\n'); }
+    catch (error) { process.stdout.write(JSON.stringify({ok:false,error:error.message}) + '\n'); process.exitCode=1; }
+    return;
+  }
   process.stdout.write(banner());
 
   if (flags.help === true || argv.includes('-h') || cmd === 'help') return printHelp();

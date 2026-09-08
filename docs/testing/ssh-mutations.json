@@ -1,0 +1,23 @@
+[
+  {
+    "mutation": "json-order",
+    "detected": true,
+    "summary": [
+      "\u2716 snapshot JSON key order survives durable storage roundtrip (34.20075ms)",
+      "\u2139 fail 1",
+      "\u2716 failing tests:",
+      "\u2716 snapshot JSON key order survives durable storage roundtrip (34.20075ms)",
+      "      at fail (file:///Users/Apple/.codex/worktrees/inventos-reconciliacion-target/src/engine/target-registry.ts:17:8)"
+    ]
+  },
+  {
+    "mutation": "host-key-policy",
+    "detected": true,
+    "summary": [
+      "\u2716 spawned SSH argv scopes trust to authorized cycle and preserves it on ubuntu fallback (1012.962667ms)",
+      "\u2139 fail 1",
+      "\u2716 failing tests:",
+      "\u2716 spawned SSH argv scopes trust to authorized cycle and preserves it on ubuntu fallback (1012.962667ms)"
+    ]
+  }
+]

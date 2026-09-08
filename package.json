@@ -1,7 +1,7 @@
 {
   "name": "inventos",
   "version": "0.1.0",
-  "description": "InventOS — instalador de terminal para stacks open-source. Seguro de fábrica, español-first, en tu propio servidor. Por Invent Agency.",
+  "description": "InventOS \u2014 instalador de terminal para stacks open-source. Seguro de f\u00e1brica, espa\u00f1ol-first, en tu propio servidor. Por Invent Agency.",
   "type": "module",
   "bin": {
     "inventos": "dist/inventos.mjs"
@@ -12,15 +12,16 @@
     "gui:dev": "npm --prefix gui run dev",
     "demo": "node bin/inventos.mjs --demo",
     "build:gui": "npm --prefix gui install --no-audit --no-fund && npm --prefix gui run build",
-    "build:cli": "esbuild bin/inventos.mjs --bundle --platform=node --format=esm --target=node18 --external:bcryptjs --outfile=dist/inventos.mjs",
-    "build:gui-server": "esbuild src/gui-server.mjs --bundle --platform=node --format=esm --target=node18 --external:bcryptjs --outfile=dist/gui-server.mjs",
+    "build:cli": "esbuild bin/inventos.mjs --bundle --platform=node --format=esm --target=node24 --external:bcryptjs --outfile=dist/inventos.mjs",
+    "build:gui-server": "esbuild src/gui-server.mjs --bundle --platform=node --format=esm --target=node24 --external:bcryptjs --outfile=dist/gui-server.mjs",
     "build": "npm run build:gui && npm run build:cli",
     "app": "npm run build:gui-server && electron electron/main.mjs",
     "dist:mac": "npm run build:gui && npm run build:gui-server && electron-builder --mac",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test": "node --test tests/*.test.mjs"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=24"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3"

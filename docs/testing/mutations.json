@@ -1,0 +1,89 @@
+[
+  {
+    "mutation": "unchanged-generation",
+    "detected": true,
+    "summary": [
+      "\u2716 unchanged generation is rejected even with matching observation and valid anchor (123.993333ms)",
+      "\u2139 fail 1",
+      "\u2716 failing tests:",
+      "\u2716 unchanged generation is rejected even with matching observation and valid anchor (123.993333ms)"
+    ]
+  },
+  {
+    "mutation": "measured-generation",
+    "detected": true,
+    "summary": [
+      "\u2716 reject sameGeneration without touching registry (125.121834ms)",
+      "\u2139 fail 1",
+      "\u2716 failing tests:",
+      "\u2716 reject sameGeneration without touching registry (125.121834ms)"
+    ]
+  },
+  {
+    "mutation": "services",
+    "detected": true,
+    "summary": [
+      "\u2716 reject services without touching registry (181.567083ms)",
+      "\u2139 fail 1",
+      "\u2716 failing tests:",
+      "\u2716 reject services without touching registry (181.567083ms)"
+    ]
+  },
+  {
+    "mutation": "containers",
+    "detected": true,
+    "summary": [
+      "\u2716 reject containers without touching registry (159.811291ms)",
+      "\u2139 fail 1",
+      "\u2716 failing tests:",
+      "\u2716 reject containers without touching registry (159.811291ms)"
+    ]
+  },
+  {
+    "mutation": "volumes",
+    "detected": true,
+    "summary": [
+      "\u2716 reject volumes without touching registry (106.847333ms)",
+      "\u2139 fail 1",
+      "\u2716 failing tests:",
+      "\u2716 reject volumes without touching registry (106.847333ms)"
+    ]
+  },
+  {
+    "mutation": "CAS",
+    "detected": true,
+    "summary": [
+      "\u2716 CAS rejects changed registry (69.79425ms)",
+      "\u2716 journal recovers crash after archive rename (67.22975ms)",
+      "\u2139 fail 2",
+      "\u2716 failing tests:",
+      "\u2716 CAS rejects changed registry (69.79425ms)",
+      "\u2716 journal recovers crash after archive rename (67.22975ms)",
+      "      at fail (file:///Users/Apple/.codex/worktrees/inventos-reconciliacion-target/src/engine/target-registry.ts:21:8)"
+    ]
+  },
+  {
+    "mutation": "org-isolation",
+    "detected": true,
+    "summary": [
+      "\u2716 same project slug in a different org cannot claim stacks or mutate owners (148.470292ms)",
+      "\u2139 fail 1",
+      "\u2716 failing tests:",
+      "\u2716 same project slug in a different org cannot claim stacks or mutate owners (148.470292ms)"
+    ]
+  },
+  {
+    "mutation": "canonical-equality",
+    "detected": true,
+    "summary": [
+      "\u2716 canonical cleanup permits exact equality between machine mtime and cycle anchor (56.943375ms)",
+      "\u2139 tests 1",
+      "\u2139 suites 0",
+      "\u2139 pass 0",
+      "\u2139 fail 1",
+      "\u2139 cancelled 0",
+      "\u2139 skipped 0",
+      "\u2139 todo 0"
+    ]
+  }
+]
