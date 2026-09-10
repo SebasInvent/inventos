@@ -38,6 +38,17 @@ function targetIdentity(target) {
 		port: target.port ?? 22,
 	};
 }
+/**
+ * Where the last reconciled generation is recorded for a target.
+ *
+ * It lives NEXT TO the registry and not inside the cycle folder on purpose: the apply that follows a
+ * cleaning cycle belongs to a DIFFERENT job — the release has its own cycleId and the new tenant's
+ * install has another — so apply cannot look the receipt up by cycle. A marker beside the registry
+ * is the only thing it can find without being told.
+ */
+export function reconciledGenerationPath(target, home = defaultHome()) {
+	return join(dirname(stackOwnershipRegistryPath(target, home)), "generation.json");
+}
 export function stackOwnershipRegistryPath(target, home = defaultHome()) {
 	const t = targetIdentity(target);
 	return join(
@@ -546,6 +557,17 @@ export async function reconcileTarget(request, options = {}) {
 				}
 			}
 			await atomic(receiptPath, result);
+			// The apply that comes after this cycle must be bound to THIS generation. Archiving the
+			// registry leaves `stacks.json` absent, and an absent registry used to mean "no generation
+			// to compare" — so apply accepted whatever it observed. The marker is what closes that.
+			await atomic(reconciledGenerationPath(b.target, options.home), {
+				schemaVersion: 1,
+				target: targetIdentity(b.target),
+				cycleId: b.cycleId,
+				instanceId: b.instanceId,
+				machineIdHash: desired.machineIdHash,
+				machineIdMtime: desired.machineIdMtime,
+			});
 			return result;
 		},
 		options.home,
@@ -581,6 +603,26 @@ export async function assertStackOwnership(
 			fail("Machine generation changed; canonical reconciliation required");
 	} else if (r.data !== null && options.orgId)
 		fail("Legacy ownership requires reviewed migration or canonical cleaning");
+	if (r.data === null) {
+		// An ABSENT registry is the normal state right after a cleaning cycle: reconciliation archives
+		// `stacks.json`. Until this check existed, that state skipped the generation comparison
+		// entirely and apply accepted any generation it happened to observe — so a disk reimaged
+		// AGAIN between the receipt and the install (or a target repointed at another machine) went
+		// through unnoticed, and the tenant's stack landed on it.
+		//
+		// The marker is only present when a cycle actually ran. Its absence means "never
+		// reconciled" — a freshly bought VPS — and that path stays as it was: this must not block the
+		// ordinary first install.
+		const marker = await json(reconciledGenerationPath(target, options.home));
+		if (marker) {
+			if (!same(marker.target, targetIdentity(target)))
+				fail("Reconciled generation belongs to another target");
+			if (!options.generation)
+				fail("Reconciled target requires the authorized generation");
+			if (!same(machine(marker), machine(options.generation)))
+				fail("Machine generation changed after reconciliation; canonical reconciliation required");
+		}
+	}
 	for (const s of stacks)
 		if (owners[s] !== undefined && owners[s] !== project)
 			fail("Stack belongs to another project");
