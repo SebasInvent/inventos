@@ -243,6 +243,27 @@ test("target traversal and changed port/user do not archive source", async (t) =
 		);
 	assert.ok(await readFile(f.path));
 });
+/**
+ * Disco vacío, para los casos que establecen propiedad SIN estado local.
+ *
+ * Desde que el gate cerró el hueco del operador/HOME, un target sin registro ni marcador se le
+ * pregunta a la máquina antes de escribir propiedad: local silence no es una máquina vacía. Estos
+ * casos describen un target limpio, así que dicen lo que la máquina contesta en vez de dejar que el
+ * gate salga a buscarlo por SSH — sin esto reintentan una sonda real contra una IP de documentación
+ * y tardan veinte segundos en fallar, midiendo la red y no la regla.
+ *
+ * Donde SÍ hay registro este observador no llega a usarse: esa rama compara generación y no
+ * vacuidad.
+ */
+const discoVacio = (generation) => async () => ({
+	...generation,
+	ip: target.host,
+	services: [],
+	containers: [],
+	volumes: [],
+	dockerPresent: false,
+	dataDirectoriesAbsent: true,
+});
 test("same project slug in a different org cannot claim stacks or mutate owners", async (t) => {
 	const f = await fixture(t);
 	await rm(f.path);
@@ -255,6 +276,7 @@ test("same project slug in a different org cannot claim stacks or mutate owners"
 				workId: "a",
 				instanceId: "123",
 				generation: fresh,
+				observe: discoVacio(fresh),
 			}),
 		f.home,
 	);
@@ -285,6 +307,7 @@ test("existing generation cannot silently follow reimage in apply gate", async (
 			engine.assertStackOwnership(["n8n"], "same", target, {
 				home: f.home,
 				generation: old,
+				observe: discoVacio(old),
 			}),
 		f.home,
 	);

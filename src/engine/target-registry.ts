@@ -621,6 +621,32 @@ export async function assertStackOwnership(
 				fail("Reconciled target requires the authorized generation");
 			if (!same(machine(marker), machine(options.generation)))
 				fail("Machine generation changed after reconciliation; canonical reconciliation required");
+		} else if (options.generation) {
+			// NO LOCAL STATE AT ALL — and local silence says nothing about the remote machine.
+			//
+			// The marker lives under the operator's HOME. A second operator (another laptop, another
+			// container, a rebuilt CI runner) has neither registry nor marker for a target someone
+			// else already owns, and until this branch existed that read as a clean slate: apply
+			// wrote fresh ownership over a running installation, silently.
+			//
+			// So the machine is asked instead of assumed. An empty disk is a genuinely new target and
+			// the ordinary first install proceeds untouched; anything running on it means this
+			// operator has no record of an installation that exists, and that is not something to
+			// resolve by overwriting. The refusal names the recovery: reconcile the target, or run
+			// from the operator whose state owns it.
+			//
+			// Only for remote targets: `apply` passes no generation for a local one, and there is no
+			// disk of someone else's to walk into.
+			const remote = await measured(target, options);
+			if (
+				remote.services.length ||
+				remote.containers.length ||
+				remote.volumes.length ||
+				!remote.dataDirectoriesAbsent
+			)
+				fail(
+					"Target already carries an installation this operator has no record of; reconcile the target or apply from the operator that owns its state",
+				);
 		}
 	}
 	for (const s of stacks)

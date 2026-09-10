@@ -82,6 +82,28 @@ const gate = (dir, generation, options = {}) =>
 		dir,
 	);
 
+const empty = {
+	services: [],
+	containers: [],
+	volumes: [],
+	dockerPresent: false,
+	dataDirectoriesAbsent: true,
+};
+const observing = (dir, generation, remote) =>
+	withTargetLock(
+		target,
+		() =>
+			assertStackOwnership(["chatbotx"], "project-a", target, {
+				home: dir,
+				orgId: "org-a",
+				workId: "install-job",
+				instanceId: "instance-1",
+				generation,
+				observe: async () => ({ ...generation, ip: target.host, ...remote }),
+			}),
+		dir,
+	);
+
 test("the generation the cycle accredited is accepted", async (t) => {
 	// Control. Without it the rejection below could pass with a gate that rejects everything.
 	const dir = await home(t);
@@ -108,8 +130,13 @@ test("a target that was NEVER reconciled still installs normally", async (t) => 
 	// The other half of the cut, and the one that keeps this from breaking production: a freshly
 	// bought VPS has no marker, and the ordinary first install must not be blocked by a cycle that
 	// never happened.
+	//
+	// It goes through `observing` and not `gate` since the gap was closed: with no local state at
+	// all, the machine is now asked whether it is empty, so this case has to say what the machine
+	// answers. Left on `gate` it reaches for a real SSH probe against a documentation IP and hangs
+	// twenty seconds before failing — the test would be measuring the network, not the rule.
 	const dir = await home(t);
-	await gate(dir, C);
+	await observing(dir, C, empty);
 });
 
 test("the second apply keeps comparing, now through the registry it just wrote", async (t) => {
@@ -142,38 +169,75 @@ test("a marker written for another target does not accredit this one", async (t)
 });
 
 /**
- * KNOWN LIMIT, measured on purpose: local absence proves nothing about the remote machine.
+ * NO LOCAL STATE IS NOT AN EMPTY MACHINE — the operator/HOME gap, now closed.
  *
- * The marker lives under the operator's HOME. A second operator — another laptop, another
- * container, a rebuilt CI runner — has no marker and no registry for the same target, and the gate
- * reads that as "never reconciled" and lets the install through.
+ * Raised in review: the marker lives under the operator's HOME, so a second operator (another
+ * laptop, another container, a rebuilt CI runner) has neither registry nor marker for a target
+ * someone else already owns. That used to read as a clean slate, and apply wrote fresh ownership
+ * over a running installation without a word.
  *
- * This is NOT a hole the marker introduced: `assertStackOwnership` already treated an absent
- * registry as a clean slate long before it existed, and that is what makes an ordinary first
- * install possible at all. What the marker changed is that the state now MATTERS, so the gap is
- * worth naming instead of leaving implied.
+ * Writing a test that asserted the failure was NOT closing it, and saying so was not enough either.
+ * The gate now asks the machine instead of assuming: an empty disk is a genuinely new target and the
+ * ordinary first install proceeds; anything running on it is an installation this operator has no
+ * record of, and the refusal names the recovery.
  *
- * Closing it needs something this file cannot fake: asking the MACHINE whether it is empty before
- * trusting local silence. `observeMachineGeneration` — the only remote call apply makes before the
- * gate — returns the machine id, not whether services, containers or volumes are running. Adding
- * that observation means another remote round trip on every real apply, and it cannot be honestly
- * verified without a VPS. So it is written down with its owner rather than half-implemented:
+ * ## What is verified here and what is not
  *
- *   owner: claude-journey (InventOS #3)
- *   closes when: apply observes remote emptiness before writing ownership on a target with no local
- *                state, and refuses with a recoverable reason when the disk is not empty
- *   until then: an operator installing onto a target another operator owns is caught by the deploy
- *               procedure, not by this gate
- *
- * The test asserts TODAY'S behaviour so the day someone closes it, this goes red and gets rewritten
- * instead of quietly staying as a false reassurance.
+ * The observation is doubled, so what these cases accredit is the DECISION: which observations pass,
+ * which refuse, and that a brand-new target is not blocked. What they do NOT accredit is the real
+ * remote probe — that `TARGET_OBSERVATION_SCRIPT` reports services, containers and volumes correctly
+ * over SSH against a live VPS, and that the extra round trip it adds to every real apply is
+ * acceptable. That validation stays pending and needs a VPS; it is not something a double can stand
+ * in for.
  */
-test("KNOWN LIMIT: another operator's HOME sees no marker and is not stopped by it", async (t) => {
+
+test("another operator does NOT walk into a target that is already running something", async (t) => {
 	const dirA = await home(t);
 	await cycle(dirA);
-	// Same target, same everything — a different operator's state directory.
+	// Same target, a different operator's state directory — and a machine with work on it.
 	const dirB = await home(t);
-	await gate(dirB, C); // does NOT throw, and that is the limit being recorded
-	// And the control that keeps this honest: in the operator that DID run the cycle, C is rejected.
-	await assert.rejects(() => gate(dirA, C), /generation changed after reconciliation/i);
+	await assert.rejects(
+		() => observing(dirB, C, { ...empty, services: ["chatbotx_web"], dockerPresent: true }),
+		/no record of/i,
+	);
+});
+
+test("...and a genuinely empty target still installs normally", async (t) => {
+	// The half that keeps this from breaking production: a freshly bought VPS has no local state and
+	// nothing running, and the ordinary first install must not be blocked by a cycle that never
+	// happened. Without this case, closing the gap takes down every new customer.
+	const dirB = await home(t);
+	await observing(dirB, C, empty);
+});
+
+test("a volume left behind is enough to refuse: absence of services is not emptiness", async (t) => {
+	// Each signal on its own, with the others in a value that passes (rule 11). A stopped stack
+	// leaves volumes with the previous tenant's data, and overwriting those is the expensive half.
+	const dirB = await home(t);
+	await assert.rejects(
+		() => observing(dirB, C, { ...empty, volumes: ["chatbotx_pgdata"] }),
+		/no record of/i,
+	);
+	const dirC = await home(t);
+	await assert.rejects(
+		() => observing(dirC, C, { ...empty, containers: ["chatbotx_worker"] }),
+		/no record of/i,
+	);
+	const dirD = await home(t);
+	await assert.rejects(
+		() => observing(dirD, C, { ...empty, dataDirectoriesAbsent: false }),
+		/no record of/i,
+	);
+});
+
+test("the operator that DID run the cycle still compares generations, not emptiness", async (t) => {
+	// The marker keeps priority: where there IS local state, the question is still "is this the
+	// generation the cycle accredited", and an empty disk does not excuse a different one.
+	const dirA = await home(t);
+	await cycle(dirA);
+	await assert.rejects(
+		() => observing(dirA, C, empty),
+		/generation changed after reconciliation/i,
+	);
+	await observing(dirA, B, empty);
 });
