@@ -140,3 +140,40 @@ test("a marker written for another target does not accredit this one", async (t)
 	);
 	await assert.rejects(() => gate(dir, B), /belongs to another target/i);
 });
+
+/**
+ * KNOWN LIMIT, measured on purpose: local absence proves nothing about the remote machine.
+ *
+ * The marker lives under the operator's HOME. A second operator — another laptop, another
+ * container, a rebuilt CI runner — has no marker and no registry for the same target, and the gate
+ * reads that as "never reconciled" and lets the install through.
+ *
+ * This is NOT a hole the marker introduced: `assertStackOwnership` already treated an absent
+ * registry as a clean slate long before it existed, and that is what makes an ordinary first
+ * install possible at all. What the marker changed is that the state now MATTERS, so the gap is
+ * worth naming instead of leaving implied.
+ *
+ * Closing it needs something this file cannot fake: asking the MACHINE whether it is empty before
+ * trusting local silence. `observeMachineGeneration` — the only remote call apply makes before the
+ * gate — returns the machine id, not whether services, containers or volumes are running. Adding
+ * that observation means another remote round trip on every real apply, and it cannot be honestly
+ * verified without a VPS. So it is written down with its owner rather than half-implemented:
+ *
+ *   owner: claude-journey (InventOS #3)
+ *   closes when: apply observes remote emptiness before writing ownership on a target with no local
+ *                state, and refuses with a recoverable reason when the disk is not empty
+ *   until then: an operator installing onto a target another operator owns is caught by the deploy
+ *               procedure, not by this gate
+ *
+ * The test asserts TODAY'S behaviour so the day someone closes it, this goes red and gets rewritten
+ * instead of quietly staying as a false reassurance.
+ */
+test("KNOWN LIMIT: another operator's HOME sees no marker and is not stopped by it", async (t) => {
+	const dirA = await home(t);
+	await cycle(dirA);
+	// Same target, same everything — a different operator's state directory.
+	const dirB = await home(t);
+	await gate(dirB, C); // does NOT throw, and that is the limit being recorded
+	// And the control that keeps this honest: in the operator that DID run the cycle, C is rejected.
+	await assert.rejects(() => gate(dirA, C), /generation changed after reconciliation/i);
+});
