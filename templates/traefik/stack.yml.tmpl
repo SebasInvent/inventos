@@ -36,6 +36,13 @@ services:
       # --- TLS por defecto en websecure (defensa en profundidad: ningún router sirve HTTP plano) ---
       - "--entrypoints.websecure.http.tls=true"
       - "--entrypoints.websecure.http.tls.certresolver=letsencryptresolver"
+      # --- Timeout de lectura de websecure: 600 s (Traefik v3 trae 60 s por defecto) ---
+      # Medido el 16-oct-2026 en el VPS de prueba: el estudio de video (HyperFrames)
+      # recibe la subida entera en UNA petición (POST /api/projects/:id/upload), y una
+      # subida que tardaba más de 60 s moría con 502 a los 60 000 ms exactos. Con 600 s,
+      # 20 MB a 250 KB/s entraron con 201 en 80 s. Es el tope de LEER la petición; no
+      # alarga respuestas ni conexiones ociosas (idleTimeout sigue en su default).
+      - "--entrypoints.websecure.transport.respondingTimeouts.readTimeout=600s"
       # --- Certresolver Let's Encrypt (ACME, challenge HTTP-01 vía entrypoint web) ---
       - "--certificatesresolvers.letsencryptresolver.acme.httpchallenge=true"
       - "--certificatesresolvers.letsencryptresolver.acme.httpchallenge.entrypoint=web"
@@ -85,7 +92,11 @@ services:
         condition: any
         delay: 5s
       update_config:
-        order: start-first
+        # stop-first, NO start-first: los puertos 80/443 van en mode host, así que la
+        # tarea nueva no puede arrancar mientras la vieja los ocupa y el update se queda
+        # colgado (pending) — cualquier cambio de argumentos no llegaría nunca. Se paga
+        # con unos segundos sin ingress durante la actualización.
+        order: stop-first
         failure_action: rollback
         delay: 5s
 

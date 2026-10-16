@@ -28,7 +28,8 @@ demás apps. No tiene dependencias (`requires: []`) — se despliega primero.
 | **Nada se expone por accidente** | `providers.swarm.exposedByDefault=false`: cada router es opt-in por label. |
 | **Cero secretos en la plantilla** | Solo tokens `${ACME_EMAIL}` y `${NETWORK}` (params, no secretos). No hay credenciales literales. |
 | **Imagen fija** | `traefik:v3.7.6` — nunca `:latest`. |
-| **Deploy controlado** | `replicas: 1`, `placement: node.role == manager`, rollback automático en fallo de update. |
+| **Deploy controlado** | `replicas: 1`, `placement: node.role == manager`, rollback automático en fallo de update. Update en `stop-first`: con 80/443 en `mode: host`, un `start-first` deja la tarea nueva esperando puertos que la vieja nunca suelta. |
+| **Subidas largas** | `websecure` lee cada petición hasta **600 s** (Traefik v3 corta a los 60 s). Una subida de video al estudio que tardaba más daba 502 a los 60 000 ms exactos (medido el 16-oct-2026). |
 
 ## Tokens que rellena el motor
 

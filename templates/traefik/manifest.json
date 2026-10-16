@@ -41,7 +41,8 @@
     "Socket de Docker montado en solo lectura (:ro).",
     "exposedByDefault=false: ningún servicio se enruta sin opt-in explícito por label.",
     "Tag de imagen fijo (traefik:v3.7.6), nunca :latest.",
-    "replicas: 1, placement node.role == manager.",
+    "replicas: 1, placement node.role == manager, update stop-first (los puertos en mode host impiden start-first).",
+    "readTimeout de websecure en 600s: las subidas largas (video) no mueren con 502 a los 60 s del default de Traefik v3.",
     "Sin secretos en la plantilla; ACME_EMAIL y NETWORK son params, no secretos."
   ]
 }
